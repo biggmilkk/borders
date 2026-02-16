@@ -1,191 +1,102 @@
 import streamlit as st
 import geopandas as gpd
 import requests
-import fiona
-import os
 import pycountry
-import tempfile
-import pandas as pd
-from zipfile import ZipFile
-from shapely.geometry import MultiPolygon, Polygon
-from streamlit_folium import folium_static
+from shapely.geometry import shape, Polygon
+from streamlit_folium import st_folium
 import folium
+from folium.plugins import Draw
 
-# --- Setup ---
-# Attempt to enable KML support in Fiona
-try:
-    fiona.supported_drivers['KML'] = 'rw'
-    fiona.supported_drivers['LIBKML'] = 'rw'
-except:
-    pass
+st.set_page_config(page_title="Border Cutter", layout="wide")
 
-st.set_page_config(page_title="Global Border Snapper", layout="centered")
-
-if 'result_gdf' not in st.session_state:
-    st.session_state.result_gdf = None
-
+# --- Functions ---
 def get_iso3(name):
     try:
         return pycountry.countries.get(name=name).alpha_3
     except:
         return None
 
-def load_data(file):
-    fname = file.name.lower()
-    suffix = os.path.splitext(fname)[1]
-    
-    with tempfile.NamedTemporaryFile(delete=False, suffix=suffix) as tmp:
-        tmp.write(file.getvalue())
-        tmp_path = tmp.name
-    
-    try:
-        if fname.endswith('.kmz'):
-            with ZipFile(tmp_path, 'r') as kmz:
-                # Find the main KML file inside the KMZ
-                kml_names = [f for f in kmz.namelist() if f.endswith('.kml')]
-                if not kml_names: return None
-                
-                # Extract KML to a temp directory to read
-                extract_path = tempfile.gettempdir()
-                kmz.extract(kml_names[0], path=extract_path)
-                k_path = os.path.join(extract_path, kml_names[0])
-                
-                layers = fiona.listlayers(k_path)
-                gdfs = []
-                for l in layers:
-                    gdf = gpd.read_file(k_path, layer=l)
-                    if not gdf.empty: 
-                        gdfs.append(gdf)
-                return pd.concat(gdfs, ignore_index=True) if gdfs else None
-        
-        return gpd.read_file(tmp_path)
-    except Exception as e:
-        st.error(f"File Loading Error: {e}")
-        return None
-    finally:
-        if os.path.exists(tmp_path): 
-            os.remove(tmp_path)
+@st.cache_data(show_spinner=False)
+def get_country_border(iso_code):
+    api_url = f"https://www.geoboundaries.org/api/current/gbOpen/{iso_code}/ADM0/"
+    r = requests.get(api_url, timeout=10).json()
+    return gpd.read_file(r['gjDownloadURL'])
 
-# --- UI Layout ---
-st.title("🗺️ Global Border Snapper")
-st.markdown("Selectively snap your local geometries to official national borders.")
+# --- Sidebar ---
+st.sidebar.title("🎨 Border Cutter")
+countries = sorted([c.name for c in pycountry.countries])
+selected_country = st.sidebar.selectbox("1. Pick a Country", countries, index=countries.index("Switzerland"))
 
-with st.container(border=True):
-    uploaded_file = st.file_uploader("Upload KMZ, KML, or GeoJSON", type=['kmz', 'kml', 'geojson'])
-    
-    countries = sorted([c.name for c in pycountry.countries])
-    default_idx = countries.index("Switzerland") if "Switzerland" in countries else 0
-    selected_country = st.selectbox("Target Country for Snapping", options=countries, index=default_idx)
-    
-    # Sensitivity: Lower is safer for performance
-    snap_distance = st.slider("Snap Sensitivity (Degrees)", 0.001, 0.05, 0.015, format="%.3f", 
-                              help="How far the 'magnet' reaches to find the border.")
+# --- State Management ---
+if 'processed_gdf' not in st.session_state:
+    st.session_state.processed_gdf = None
 
-    if st.button("Process and Snap", use_container_width=True):
-        if not uploaded_file:
-            st.warning("Please upload a file first.")
-        else:
-            try:
-                with st.status("Running Spatial Analysis...") as status:
-                    # 1. Load and Clean User Data
-                    iso_code = get_iso3(selected_country)
-                    raw_data = load_data(uploaded_file)
-                    
-                    if raw_data is None or raw_data.empty:
-                        st.error("No valid polygons found.")
-                        st.stop()
+# --- Main App ---
+iso = get_iso3(selected_country)
+border_gdf = get_country_border(iso)
 
-                    user_gdf = raw_data.to_crs(epsg=4326)
-                    # Merge all features into one shape and simplify slightly to prevent hanging
-                    user_geom = user_gdf.geometry.union_all().make_valid().simplify(0.00001)
+st.subheader(f"2. Draw the area you want to keep in {selected_country}")
+st.info("Use the polygon or rectangle tool on the left of the map to select the southern region.")
 
-                    # 2. Fetch official Border from geoBoundaries API
-                    status.update(label="Fetching Border Data...")
-                    api_url = f"https://www.geoboundaries.org/api/current/gbOpen/{iso_code}/ADM0/"
-                    
-                    resp = requests.get(api_url, timeout=15)
-                    resp.raise_for_status()
-                    border_data = resp.json()
-                    
-                    border_gdf = gpd.read_file(border_data['gjDownloadURL'])
-                    border_geom = border_gdf.geometry.union_all().make_valid()
+# Initialize Map
+m = folium.Map()
+# Fit to country
+bounds = border_gdf.total_bounds
+m.fit_bounds([[bounds[1], bounds[0]], [bounds[3], bounds[2]]])
 
-                    # 3. Selective Snapping Logic
-                    status.update(label="Snapping Geometries...")
-                    # Identify the area near the user's boundary
-                    search_zone = user_geom.boundary.buffer(snap_distance)
-                    relevant_border = border_geom.intersection(search_zone)
+# Show the country border as a reference
+folium.GeoJson(
+    border_gdf, 
+    style_function=lambda x: {'color': '#666', 'fillOpacity': 0.1, 'weight': 1},
+    interactive=False
+).add_to(m)
 
-                    if not relevant_border.is_empty:
-                        # Union the user shape with the border segment found in the search zone
-                        final_union = user_geom.union(relevant_border)
-                    else:
-                        final_union = user_geom
+# Add Drawing Tools
+draw = Draw(
+    export=False,
+    draw_options={
+        'polyline': False, 'circle': False, 'marker': False, 
+        'circlemarker': False, 'polygon': True, 'rectangle': True
+    }
+)
+draw.add_to(m)
 
-                    # 4. Clean up Geometry
-                    final_poly_geom = final_union.make_valid()
-                    
-                    # Ensure we have a single Polygon (pick largest if MultiPolygon)
-                    if isinstance(final_poly_geom, (MultiPolygon)):
-                        final_poly = max(final_poly_geom.geoms, key=lambda a: a.area)
-                    else:
-                        final_poly = final_poly_geom
+# Display Map and capture output
+output = st_folium(m, width=900, height=600, key="main_map")
 
-                    # High detail segmentization (don't go too small or Folium will crash)
-                    final_poly = final_poly.segmentize(max_segment_length=0.001)
-                    
-                    st.session_state.result_gdf = gpd.GeoDataFrame(geometry=[final_poly], crs="EPSG:4326")
-                    status.update(label="Processing Complete!", state="complete")
-                    
-            except Exception as e:
-                st.error(f"Processing Error: {str(e)}")
+# --- Processing Logic ---
+if output['last_active_drawing']:
+    # Convert user drawing to a Shapely geometry
+    user_draw_coords = output['last_active_drawing']['geometry']
+    user_shape = shape(user_draw_coords)
+    user_gdf = gpd.GeoDataFrame(geometry=[user_shape], crs="EPSG:4326")
 
-# --- Results Section ---
-if st.session_state.result_gdf is not None:
-    res = st.session_state.result_gdf
-    bounds = res.total_bounds
-    
+    if st.button("✂️ Cut to Border", use_container_width=True):
+        with st.spinner("Calculating perfect intersection..."):
+            # The "Cookie Cutter" Magic
+            # This keeps only the parts of the user's drawing that are INSIDE the country
+            result = gpd.overlay(user_gdf, border_gdf, how='intersection')
+            
+            if not result.empty:
+                st.session_state.processed_gdf = result
+                st.success("Successfully cut to international border!")
+            else:
+                st.error("Your drawing doesn't overlap with the country!")
+
+# --- Export Section ---
+if st.session_state.processed_gdf is not None:
     st.divider()
-    st.subheader("Results")
+    st.subheader("3. Download Results")
+    final_res = st.session_state.processed_gdf
     
-    if any(pd.isna(bounds)):
-        st.error("Resulting geometry is invalid. Try a different Snap Sensitivity.")
-    else:
-        # Create Folium Map
-        m = folium.Map()
-        # Fix for Folium bounds [lat, lon]
-        m.fit_bounds([[bounds[1], bounds[0]], [bounds[3], bounds[2]]])
-        
-        folium.GeoJson(
-            res, 
-            style_function=lambda x: {'color': '#2ecc71', 'fillColor': '#2ecc71', 'weight': 3, 'fillOpacity': 0.3}
-        ).add_to(m)
-        
-        folium_static(m, width=700, height=450)
-
-        # Download Buttons
-        col1, col2 = st.columns(2)
-        
-        # GeoJSON Export
-        col1.download_button(
-            label="Download GeoJSON",
-            data=res.to_json(),
-            file_name="snapped_border.geojson",
-            mime="application/json",
-            use_container_width=True
-        )
-        
-        # KML Export
-        try:
-            with tempfile.NamedTemporaryFile(delete=False, suffix='.kml') as tmp:
-                res.to_file(tmp.name, driver='KML')
-                with open(tmp.name, "rb") as f:
-                    col2.download_button(
-                        label="Download KML",
-                        data=f,
-                        file_name="snapped_border.kml",
-                        use_container_width=True
-                    )
-            os.remove(tmp.name)
-        except Exception as kml_err:
-            col2.error("KML Export failed (Driver issue). Use GeoJSON.")
+    c1, c2 = st.columns(2)
+    c1.download_button(
+        "Download GeoJSON", 
+        final_res.to_json(), 
+        f"{selected_country}_cutout.geojson",
+        use_container_width=True
+    )
+    
+    # Simple table to show area
+    area_sq_km = final_res.to_crs(epsg=3857).area.sum() / 10**6
+    st.metric("Total Area Captured", f"{area_sq_km:,.2f} km²")
