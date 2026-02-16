@@ -117,4 +117,27 @@ if st.session_state.result_gdf is not None:
     
     # Bounds for auto-fit
     bounds = res.total_bounds
-    map_bounds = [[bounds
+    map_bounds = [[bounds[1], bounds[0]], [bounds[3], bounds[2]]]
+
+    m = folium.Map(tiles='OpenStreetMap')
+    m.fit_bounds(map_bounds)
+    
+    folium.GeoJson(
+        res, 
+        style_function=lambda x: {'color': '#0000FF', 'weight': 2, 'fillOpacity': 0.2}
+    ).add_to(m)
+    
+    st_folium(m, width=700, height=500, key="fixed_preview_map")
+
+    c1, c2 = st.columns(2)
+    
+    # High-precision GeoJSON
+    geojson_out = res.to_json(na='null', show_bbox=False, drop_id=True)
+    c1.download_button("Download GeoJSON", geojson_out, "snapped_polygon.geojson", use_container_width=True)
+    
+    # KML via temporary physical file
+    with tempfile.NamedTemporaryFile(delete=False, suffix='.kml') as tmp_kml:
+        res.to_file(tmp_kml.name, driver='KML')
+        with open(tmp_kml.name, "rb") as f:
+            c2.download_button("Download KML", f, "snapped_polygon.kml", use_container_width=True)
+    os.remove(tmp_kml.name)
