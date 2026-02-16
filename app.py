@@ -11,7 +11,7 @@ import folium
 from folium.plugins import Draw
 
 # --- Configuration ---
-st.set_page_config(page_title="International Border Geospatial Alignment Engine", layout="centered")
+st.set_page_config(page_title="Geospatial Border Alignment Engine", layout="centered")
 
 # Initialize KML drivers
 if 'KML' not in fiona.supported_drivers:
