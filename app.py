@@ -10,13 +10,15 @@ from shapely.geometry import MultiPolygon
 from streamlit_folium import st_folium
 import folium
 
-# Setup
+# Setup drivers
 fiona.supported_drivers['KML'] = 'rw'
-st.set_page_config(page_title="High-Fidelity Snapper", layout="wide")
+st.set_page_config(page_title="Global Border Snapper", layout="centered")
 
+# Initialize session state for persistence
 if 'result_gdf' not in st.session_state:
     st.session_state.result_gdf = None
 
+# --- Helpers ---
 countries = sorted([c.name for c in pycountry.countries])
 
 def get_iso3(name):
@@ -31,75 +33,88 @@ def load_data(file):
                 return gpd.read_file(kml_file, driver='KML')
     return gpd.read_file(file)
 
-# --- UI ---
-st.title("🏔️ High-Fidelity Mapbox Snapper")
-st.markdown("Use this version for jagged, complex borders like Switzerland/Italy to prevent Mapbox simplification.")
+# --- Main UI ---
+st.title("🗺️ Global Border Snapper")
+st.markdown("Snap polygons to international borders. Optimized for high-detail Mapbox uploads.")
 
-with st.sidebar:
-    st.header("Upload & Settings")
-    uploaded_file = st.file_uploader("Upload Polygon", type=['geojson', 'kml', 'kmz'])
-    selected_country = st.selectbox("Target Country", options=countries, index=countries.index("Italy") if "Italy" in countries else 0)
+with st.container(border=True):
+    uploaded_file = st.file_uploader("1. Upload Polygon (GeoJSON, KML, KMZ)", type=['geojson', 'kml', 'kmz'])
+    selected_country = st.selectbox("2. Target Country", options=countries)
     
-    st.subheader("Mapbox Protection")
-    # Decreasing max_segment_length adds MORE points. 
-    # 0.0005 degrees is roughly every 50 meters.
-    point_density = st.slider("Anchor Point Spacing (Degrees)", 0.0001, 0.005, 0.0005, format="%.4f")
-    st.caption("Lower value = More points = Less simplification in Mapbox.")
+    # Hidden high-fidelity setting (defaults to the "Alpine-grade" detail you need)
+    point_density = 0.0005 
 
     if st.button("🚀 Process & Snap", use_container_width=True):
         if uploaded_file:
-            iso_code = get_iso3(selected_country)
-            user_gdf = load_data(uploaded_file).to_crs(epsg=4326)
-            
-            # Fetch geoBoundaries
-            api_url = f"https://www.geoboundaries.org/api/current/gbOpen/{iso_code}/ADM0/"
-            r = requests.get(api_url).json()
-            border_gdf = gpd.read_file(r['gjDownloadURL'])
-            
-            # Snap Logic
-            snapped = user_gdf.unary_union.buffer(0.005).intersection(border_gdf.unary_union)
-            final_union = unary_union([user_gdf.unary_union, snapped])
-            
-            # Filter for largest contiguous polygon
-            if isinstance(final_union, MultiPolygon):
-                final_poly = max(final_union.geoms, key=lambda a: a.area)
-            else:
-                final_poly = final_union
+            try:
+                with st.status("Snapping to international border...") as status:
+                    iso_code = get_iso3(selected_country)
+                    
+                    # 1. Load User Data
+                    user_gdf = load_data(uploaded_file).to_crs(epsg=4326)
+                    user_geom = user_gdf.unary_union
 
-            # HIGH-FIDELITY DENSIFICATION
-            # This is the "secret sauce" to force Mapbox to keep the detail.
-            final_poly = final_poly.segmentize(max_segment_length=point_density)
+                    # 2. Fetch geoBoundaries
+                    api_url = f"https://www.geoboundaries.org/api/current/gbOpen/{iso_code}/ADM0/"
+                    r = requests.get(api_url).json()
+                    border_gdf = gpd.read_file(r['gjDownloadURL'])
+                    border_geom = border_gdf.unary_union
 
-            st.session_state.result_gdf = gpd.GeoDataFrame(geometry=[final_poly], crs="EPSG:4326")
+                    # 3. Snap & Merge Logic
+                    # Buffer handles the "close enough" requirement
+                    snapped_segment = user_geom.buffer(0.005).intersection(border_geom)
+                    final_union = unary_union([user_geom, snapped_segment])
+                    
+                    # Single Contiguous Requirement
+                    if isinstance(final_union, MultiPolygon):
+                        final_poly = max(final_union.geoms, key=lambda a: a.area)
+                    else:
+                        final_poly = final_union
 
-# --- Display ---
+                    # 4. Mapbox Optimization (Densification)
+                    # Adds anchor points every ~50m to prevent Mapbox simplification
+                    final_poly = final_poly.segmentize(max_segment_length=point_density)
+
+                    st.session_state.result_gdf = gpd.GeoDataFrame(geometry=[final_poly], crs="EPSG:4326")
+                    status.update(label="Processing Complete!", state="complete")
+            except Exception as e:
+                st.error(f"Error: {e}")
+        else:
+            st.warning("Please upload a file first.")
+
+# --- Persistent Results Area ---
 if st.session_state.result_gdf is not None:
     res = st.session_state.result_gdf
     poly = res.geometry.iloc[0]
 
-    col1, col2 = st.columns([3, 1])
+    st.divider()
+    st.subheader("Preview & Export")
+    
+    # Map Preview with Satellite toggle included
+    m = folium.Map(location=[poly.centroid.y, poly.centroid.x], zoom_start=12)
+    folium.TileLayer(
+        tiles='https://mt1.google.com/vt/lyrs=y&x={x}&y={y}&z={z}',
+        attr='Google',
+        name='Google Satellite (Hybrid)',
+        overlay=False,
+        control=True
+    ).add_to(m)
+    folium.TileLayer('OpenStreetMap').add_to(m)
+    
+    folium.GeoJson(res, style_function=lambda x: {'color': '#0000FF', 'weight': 3, 'fillOpacity': 0.3}).add_to(m)
+    folium.LayerControl().add_to(m)
+    
+    st_folium(m, width=700, height=500, key="persistent_map")
 
-    with col1:
-        # Map with Satellite Toggle to verify against terrain
-        m = folium.Map(location=[poly.centroid.y, poly.centroid.x], zoom_start=12)
-        folium.TileLayer(
-            tiles='https://mt1.google.com/vt/lyrs=s&x={x}&y={y}&z={z}',
-            attr='Google',
-            name='Google Satellite',
-            overlay=False,
-            control=True
-        ).add_to(m)
-        folium.TileLayer('OpenStreetMap').add_to(m)
-        
-        folium.GeoJson(res, name="Snapped Result", 
-                       style_function=lambda x: {'color': '#FF3333', 'weight': 3, 'fillOpacity': 0.2}).add_to(m)
-        folium.LayerControl().add_to(m)
-        st_folium(m, width="100%", height=600, key="hf_map")
-
-    with col2:
-        st.subheader("Export")
-        # 15-decimal precision is key for Mapbox high-zoom accuracy
-        geojson_data = res.to_json(na='null', show_bbox=False, drop_id=True)
-        st.download_button("📩 High-Precision GeoJSON", geojson_data, "mapbox_high_res.geojson", use_container_width=True)
-        
-        st.info("💡 **Mapbox Tip:** When uploading to Mapbox Studio, set the 'Simplification' slider to 0 in the Tileset settings.")
+    # Downloads
+    c1, c2 = st.columns(2)
+    
+    # High-precision GeoJSON for Mapbox
+    geojson_out = res.to_json(na='null', show_bbox=False, drop_id=True)
+    c1.download_button("📩 Download GeoJSON", geojson_out, "mapbox_ready.geojson", use_container_width=True)
+    
+    # KML Export
+    res.to_file("temp_out.kml", driver='KML')
+    with open("temp_out.kml", "rb") as f:
+        c2.download_button("📩 Download KML", f, "output.kml", use_container_width=True)
+    os.remove("temp_out.kml")
