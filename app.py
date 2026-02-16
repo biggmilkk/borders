@@ -71,7 +71,6 @@ with st.container(border=True):
                         final_poly = final_union
 
                     # 4. Mapbox Optimization (Densification)
-                    # This forces Mapbox to respect the jagged nature of the border
                     final_poly = final_poly.segmentize(max_segment_length=point_density)
 
                     st.session_state.result_gdf = gpd.GeoDataFrame(geometry=[final_poly], crs="EPSG:4326")
@@ -84,17 +83,20 @@ with st.container(border=True):
 # --- Persistent Results Area ---
 if st.session_state.result_gdf is not None:
     res = st.session_state.result_gdf
-    poly = res.geometry.iloc[0]
+    
+    # Calculate bounds for the map to fit the whole polygon
+    # bounds is [[min_lat, min_lon], [max_lat, max_lon]]
+    bounds = res.total_bounds
+    map_bounds = [[bounds[1], bounds[0]], [bounds[3], bounds[2]]]
 
     st.divider()
     st.subheader("Preview and Export")
     
-    # Map Preview: Clean Standard View
-    m = folium.Map(
-        location=[poly.centroid.y, poly.centroid.x], 
-        zoom_start=12,
-        tiles='OpenStreetMap'
-    )
+    # Initialize map
+    m = folium.Map(tiles='OpenStreetMap')
+    
+    # Fit the map to the polygon boundaries
+    m.fit_bounds(map_bounds)
     
     folium.GeoJson(
         res, 
@@ -110,11 +112,9 @@ if st.session_state.result_gdf is not None:
     # Downloads
     c1, c2 = st.columns(2)
     
-    # High-precision GeoJSON for Mapbox Studio
     geojson_out = res.to_json(na='null', show_bbox=False, drop_id=True)
     c1.download_button("Download GeoJSON", geojson_out, "snapped_polygon.geojson", use_container_width=True)
     
-    # KML Export
     res.to_file("temp_out.kml", driver='KML')
     with open("temp_out.kml", "rb") as f:
         c2.download_button("Download KML", f, "snapped_polygon.kml", use_container_width=True)
