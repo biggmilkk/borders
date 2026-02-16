@@ -11,8 +11,9 @@ import folium
 from folium.plugins import Draw
 
 # --- Configuration ---
-st.set_page_config(page_title="Geospatial International Border Mapper", layout="centered")
+st.set_page_config(page_title="International Border Geospatial Alignment Engine", layout="centered")
 
+# Initialize KML drivers
 if 'KML' not in fiona.supported_drivers:
     fiona.supported_drivers['KML'] = 'rw'
 
@@ -33,7 +34,7 @@ st.markdown("""
         background-color: #333333;
         color: white;
     }
-    /* Neutral Reset Button Style */
+    /* Reset Button Specific Style */
     #reset-button div.stButton > button {
         background-color: #f0f2f6;
         color: #1a1a1a;
@@ -47,6 +48,7 @@ st.markdown("""
     .stAppViewMain {
         filter: none !important;
     }
+    /* Hide the top-right loading spinner for seamless interaction */
     [data-testid="stStatusWidget"] {
         display: none;
     }
@@ -73,16 +75,16 @@ def fetch_boundary(country_name):
 if 'active_result' not in st.session_state:
     st.session_state.active_result = None
 
-# --- Header and Jurisdiction ---
-st.title("Geospatial International Border Mapper")
-st.caption("Standardized clipping of user-defined geometries against official ADM0 international boundaries.")
+# --- Header and Jurisdiction Selection ---
+st.title("International Border Geospatial Alignment Engine")
+st.caption("Engineered spatial reconciliation of user-defined vectors against authoritative ADM0 datasets.")
 
 country_list = sorted([c.name for c in pycountry.countries])
 selected_target = st.selectbox(
     "Select International Jurisdiction", 
     country_list, 
     index=None, 
-    placeholder="Choose a country to load borders..."
+    placeholder="Choose a country to load reference borders..."
 )
 
 boundary_gdf = fetch_boundary(selected_target)
@@ -91,14 +93,16 @@ boundary_gdf = fetch_boundary(selected_target)
 st.markdown("---")
 st.subheader("Define Area of Interest")
 if not selected_target:
-    st.info("Select a jurisdiction above to activate the map.")
+    st.info("Select a jurisdiction above to activate the spatial workbench.")
 
+# Map initialization
 if boundary_gdf is not None:
     b = boundary_gdf.total_bounds
     map_center = [(b[1] + b[3]) / 2, (b[0] + b[2]) / 2]
     m = folium.Map(location=map_center, zoom_start=6, tiles='CartoDB Positron')
     m.fit_bounds([[b[1], b[0]], [b[3], b[2]]])
     
+    # Official Boundary (Reference Layer)
     folium.GeoJson(
         boundary_gdf, 
         style_function=lambda x: {'color': '#1a1a1a', 'fillOpacity': 0.02, 'weight': 0.8},
@@ -107,6 +111,7 @@ if boundary_gdf is not None:
 else:
     m = folium.Map(location=[20, 0], zoom_start=2, tiles='CartoDB Positron')
 
+# Display result preview (The Scoped Polygon)
 if st.session_state.active_result is not None:
     folium.GeoJson(
         st.session_state.active_result,
@@ -118,6 +123,7 @@ if st.session_state.active_result is not None:
         }
     ).add_to(m)
 
+# Drawing Tools
 Draw(
     export=False,
     position='topleft',
@@ -127,6 +133,7 @@ Draw(
     }
 ).add_to(m)
 
+# Capture interaction - restricted return objects prevent zoom/pan flicker
 map_interaction = st_folium(
     m, 
     width="100%", 
@@ -145,12 +152,14 @@ if map_interaction and map_interaction.get('all_drawings') and boundary_gdf is n
         processed_intersection = gpd.overlay(input_gdf, boundary_gdf, how='intersection')
         
         if not processed_intersection.empty:
+            # Strip attributes to ensure polygon descriptions are empty
             final_gdf = processed_intersection[['geometry']].copy()
+            
             if st.session_state.active_result is None or not final_gdf.equals(st.session_state.active_result):
                 st.session_state.active_result = final_gdf
                 st.rerun()
 
-# --- Export Section (Full Width Buttons) ---
+# --- Export Section (Full Width) ---
 @st.fragment
 def export_section():
     if st.session_state.active_result is not None:
@@ -161,7 +170,7 @@ def export_section():
         clean_name = selected_target.lower().replace(" ", "_") if selected_target else "country"
         final_filename = f"{clean_name}_border"
         
-        # Row 1: Primary Downloads - 50/50 Split
+        # Primary Multi-format Export Row
         col_json, col_kml = st.columns(2)
         with col_json:
             st.download_button(
@@ -177,18 +186,19 @@ def export_section():
                 with tempfile.NamedTemporaryFile(delete=False, suffix='.kml') as tmp:
                     export_gdf.to_file(tmp.name, driver='KML')
                     with open(tmp.name, "rb") as f:
-                        st.download_button(
-                            label="Download KML",
-                            data=f.read(),
-                            file_name=f"{final_filename}.kml",
-                            mime="application/vnd.google-earth.kml+xml",
-                            use_container_width=True
-                        )
+                        kml_data = f.read()
+                    st.download_button(
+                        label="Download KML",
+                        data=kml_data,
+                        file_name=f"{final_filename}.kml",
+                        mime="application/vnd.google-earth.kml+xml",
+                        use_container_width=True
+                    )
                 os.remove(tmp.name)
             except:
-                st.error("KML export unavailable.")
+                st.error("KML export logic failed. Ensure 'fiona' KML driver is active.")
         
-        # Row 2: Reset Action - Full Width
+        # Reset Row
         st.markdown('<div id="reset-button">', unsafe_allow_html=True)
         if st.button("Reset Canvas", use_container_width=True):
             st.session_state.active_result = None
