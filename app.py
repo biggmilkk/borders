@@ -5,14 +5,16 @@ import fiona
 import os
 import pycountry
 import tempfile
-import pandas as pd
 from zipfile import ZipFile
 from shapely.geometry import MultiPolygon
+from streamlit_folium import folium_static
+import folium
 
 # Setup drivers
 fiona.supported_drivers['KML'] = 'rw'
 st.set_page_config(page_title="Global Border Snapper", layout="centered")
 
+# Initialize session state
 if 'result_gdf' not in st.session_state:
     st.session_state.result_gdf = None
 
@@ -54,7 +56,7 @@ with st.container(border=True):
     if st.button("Process and Snap", use_container_width=True):
         if uploaded_file:
             try:
-                with st.spinner("Processing..."):
+                with st.spinner("Processing geospatial data..."):
                     iso_code = get_iso3(selected_country)
                     raw_gdf = load_data(uploaded_file)
                     
@@ -85,17 +87,33 @@ with st.container(border=True):
                     st.success("Processing Complete")
             except Exception as e:
                 st.error(f"Error: {e}")
+        else:
+            st.warning("Please upload a file first.")
 
-# --- Results Area (Native Component) ---
+# --- Results Area (Reverted to Folium Static) ---
 if st.session_state.result_gdf is not None:
     st.divider()
     st.subheader("Preview and Export")
     
     res_gdf = st.session_state.result_gdf
     
-    # Use st.map for guaranteed visibility
-    # We extract coordinates for the map component
-    st.map(res_gdf)
+    # Calculate bounds for Folium
+    bounds = res_gdf.total_bounds # [minx, miny, maxx, maxy]
+    
+    # Initialize Map with explicit tiles
+    m = folium.Map(tiles="OpenStreetMap", location=[(bounds[1] + bounds[3])/2, (bounds[0] + bounds[2])/2])
+    
+    # Fit map to bounds
+    m.fit_bounds([[bounds[1], bounds[0]], [bounds[3], bounds[2]]])
+    
+    # Add the GeoJson
+    folium.GeoJson(
+        res_gdf, 
+        style_function=lambda x: {'color': '#0000FF', 'weight': 2, 'fillOpacity': 0.2}
+    ).add_to(m)
+    
+    # Use folium_static for the most reliable rendering
+    folium_static(m, width=700, height=500)
 
     # Download Section
     geojson_out = res_gdf.to_json(na='null', show_bbox=False, drop_id=True)
