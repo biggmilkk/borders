@@ -13,7 +13,6 @@ from folium.plugins import Draw
 # --- Configuration ---
 st.set_page_config(page_title="Geospatial International Border Mapper", layout="centered")
 
-# Initialize KML drivers
 if 'KML' not in fiona.supported_drivers:
     fiona.supported_drivers['KML'] = 'rw'
 
@@ -35,7 +34,7 @@ st.markdown("""
         color: white;
     }
     /* Neutral Reset Button Style */
-    div[data-testid="column"]:nth-of-type(2) div.stButton > button {
+    #reset-button div.stButton > button {
         background-color: #f0f2f6;
         color: #1a1a1a;
         border: 1px solid #d1d5db;
@@ -48,7 +47,6 @@ st.markdown("""
     .stAppViewMain {
         filter: none !important;
     }
-    /* Hide the top-right loading spinner */
     [data-testid="stStatusWidget"] {
         display: none;
     }
@@ -95,7 +93,6 @@ st.subheader("Define Area of Interest")
 if not selected_target:
     st.info("Select a jurisdiction above to activate the map.")
 
-# Map initialization
 if boundary_gdf is not None:
     b = boundary_gdf.total_bounds
     map_center = [(b[1] + b[3]) / 2, (b[0] + b[2]) / 2]
@@ -110,7 +107,6 @@ if boundary_gdf is not None:
 else:
     m = folium.Map(location=[20, 0], zoom_start=2, tiles='CartoDB Positron')
 
-# Display result preview
 if st.session_state.active_result is not None:
     folium.GeoJson(
         st.session_state.active_result,
@@ -122,7 +118,6 @@ if st.session_state.active_result is not None:
         }
     ).add_to(m)
 
-# Drawing Tools
 Draw(
     export=False,
     position='topleft',
@@ -132,7 +127,6 @@ Draw(
     }
 ).add_to(m)
 
-# High Stability Zoom/Pan configuration
 map_interaction = st_folium(
     m, 
     width="100%", 
@@ -151,14 +145,12 @@ if map_interaction and map_interaction.get('all_drawings') and boundary_gdf is n
         processed_intersection = gpd.overlay(input_gdf, boundary_gdf, how='intersection')
         
         if not processed_intersection.empty:
-            # Strip all attributes to keep descriptions empty
             final_gdf = processed_intersection[['geometry']].copy()
-            
             if st.session_state.active_result is None or not final_gdf.equals(st.session_state.active_result):
                 st.session_state.active_result = final_gdf
                 st.rerun()
 
-# --- Export Section (Centered & Multi-Format) ---
+# --- Export Section (Full Width Buttons) ---
 @st.fragment
 def export_section():
     if st.session_state.active_result is not None:
@@ -169,8 +161,8 @@ def export_section():
         clean_name = selected_target.lower().replace(" ", "_") if selected_target else "country"
         final_filename = f"{clean_name}_border"
         
-        # Centered Row 1: Primary Downloads
-        _, col_json, col_kml, _ = st.columns([1, 2, 2, 1])
+        # Row 1: Primary Downloads - 50/50 Split
+        col_json, col_kml = st.columns(2)
         with col_json:
             st.download_button(
                 label="Download GeoJSON",
@@ -196,12 +188,11 @@ def export_section():
             except:
                 st.error("KML export unavailable.")
         
-        # Centered Row 2: Secondary Action (Reset)
-        st.write("") # Spacer
-        _, reset_col, _ = st.columns([2, 1, 2])
-        with reset_col:
-            if st.button("Reset Canvas"):
-                st.session_state.active_result = None
-                st.rerun()
+        # Row 2: Reset Action - Full Width
+        st.markdown('<div id="reset-button">', unsafe_allow_html=True)
+        if st.button("Reset Canvas", use_container_width=True):
+            st.session_state.active_result = None
+            st.rerun()
+        st.markdown('</div>', unsafe_allow_html=True)
 
 export_section()
