@@ -33,6 +33,15 @@ st.markdown("""
         background-color: #333333;
         color: white;
     }
+    /* Neutral Reset Button Style */
+    div[data-testid="stVerticalBlock"] > div:last-child div.stButton > button {
+        background-color: #f0f2f6;
+        color: #1a1a1a;
+        border: 1px solid #d1d5db;
+    }
+    div[data-testid="stVerticalBlock"] > div:last-child div.stButton > button:hover {
+        background-color: #e5e7eb;
+    }
     /* Disable the gray-out/fade effect during reruns */
     div[data-testid="stOverlay"] {
         background-color: transparent !important;
@@ -95,7 +104,6 @@ if boundary_gdf is not None:
     m = folium.Map(location=map_center, zoom_start=6, tiles='CartoDB Positron')
     m.fit_bounds([[b[1], b[0]], [b[3], b[2]]])
     
-    # Official Boundary (Reference)
     folium.GeoJson(
         boundary_gdf, 
         style_function=lambda x: {'color': '#1a1a1a', 'fillOpacity': 0.02, 'weight': 0.8},
@@ -126,7 +134,6 @@ Draw(
     }
 ).add_to(m)
 
-# The 'returned_objects' parameter prevents zooms from triggering app-wide fades
 map_interaction = st_folium(
     m, 
     width="100%", 
@@ -146,8 +153,6 @@ if map_interaction and map_interaction.get('all_drawings') and boundary_gdf is n
         
         if not processed_intersection.empty:
             final_gdf = processed_intersection[['geometry']].copy()
-            
-            # Update state only if result changed to maintain map stability
             if st.session_state.active_result is None or not final_gdf.equals(st.session_state.active_result):
                 st.session_state.active_result = final_gdf
                 st.rerun()
@@ -163,8 +168,8 @@ def export_section():
         clean_name = selected_target.lower().replace(" ", "_") if selected_target else "country"
         final_filename = f"{clean_name}_border"
         
-        col_json, col_kml, col_clear = st.columns(3)
-        
+        # Row 1: Primary Downloads
+        col_json, col_kml = st.columns(2)
         with col_json:
             st.download_button(
                 label="Download GeoJSON",
@@ -178,20 +183,20 @@ def export_section():
                 with tempfile.NamedTemporaryFile(delete=False, suffix='.kml') as tmp:
                     export_gdf.to_file(tmp.name, driver='KML')
                     with open(tmp.name, "rb") as f:
-                        kml_data = f.read()
-                    st.download_button(
-                        label="Download KML",
-                        data=kml_data,
-                        file_name=f"{final_filename}.kml",
-                        mime="application/vnd.google-earth.kml+xml"
-                    )
+                        st.download_button(
+                            label="Download KML",
+                            data=f.read(),
+                            file_name=f"{final_filename}.kml",
+                            mime="application/vnd.google-earth.kml+xml"
+                        )
                 os.remove(tmp.name)
             except:
                 st.error("KML export unavailable.")
-                
-        with col_clear:
-            if st.button("Reset Canvas"):
-                st.session_state.active_result = None
-                st.rerun()
+        
+        # Row 2: Secondary Action (Reset)
+        st.write("") # Spacer
+        if st.button("Reset Canvas"):
+            st.session_state.active_result = None
+            st.rerun()
 
 export_section()
