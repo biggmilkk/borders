@@ -1,65 +1,110 @@
 import streamlit as st
 import geopandas as gpd
 import requests
+import fiona
+import os
+from zipfile import ZipFile
 from shapely.ops import unary_union
 from shapely.geometry import MultiPolygon
-import fiona
+from streamlit_folium import st_folium
+import folium
 
-# Enable KML support
+# Enable KML and KMZ drivers
 fiona.supported_drivers['KML'] = 'rw'
+fiona.supported_drivers['LIBKML'] = 'rw'
 
-st.title("🌍 International Border Snapper")
-st.markdown("Upload a polygon, pick a country, and I'll snap the edges to the geoBoundaries border.")
+st.set_page_config(page_title="Border Snapper", layout="wide")
 
-# 1. Inputs
-uploaded_file = st.file_uploader("Upload your Polygon (GeoJSON or KML)", type=['geojson', 'kml'])
-iso_code = st.text_input("Enter Country ISO Code (e.g., USA, MEX, CAN)", value="USA").upper()
-snap_dist = st.slider("Snapping Buffer (Degrees)", 0.0001, 0.05, 0.005, format="%.4f")
+st.title("🌍 International Border Snapper & Merger")
+st.markdown("""
+Upload a polygon (GeoJSON, KML, or KMZ), and this app will:
+1. **Snap** it to the official geoBoundaries international border.
+2. **Merge** all parts into a single contiguous polygon.
+""")
 
+# --- Sidebar Inputs ---
+st.sidebar.header("Settings")
+uploaded_file = st.sidebar.file_uploader("Upload Polygon", type=['geojson', 'kml', 'kmz'])
+iso_code = st.sidebar.text_input("Country ISO3 (e.g., USA, FRA, MEX)", value="USA").upper()
+snap_buffer = st.sidebar.slider("Snapping Tolerance (Degrees)", 0.0001, 0.05, 0.005, step=0.0001)
+
+def load_data(file):
+    fname = file.name.lower()
+    if fname.endswith('.kmz'):
+        with ZipFile(file, 'r') as kmz:
+            kml_name = [f for f in kmz.namelist() if f.endswith('.kml')][0]
+            with kmz.open(kml_name, 'r') as kml_file:
+                return gpd.read_file(kml_file, driver='KML')
+    else:
+        return gpd.read_file(file)
+
+# --- Main Logic ---
 if uploaded_file and iso_code:
     try:
-        # Load User Data
-        user_gdf = gpd.read_file(uploaded_file)
+        # 1. Load User Polygon
+        user_gdf = load_data(uploaded_file)
         if user_gdf.crs is None:
             user_gdf.set_crs(epsg=4326, inplace=True)
         user_gdf = user_gdf.to_crs(epsg=4326)
 
-        # 2. Fetch geoBoundaries
-        with st.spinner(f"Fetching {iso_code} borders..."):
-            gb_url = f"https://www.geoboundaries.org/api/current/gbOpen/{iso_code}/ADM0/"
-            gb_data = requests.get(gb_url).json()
-            border_gdf = gpd.read_file(gb_data['gjDownloadURL'])
+        # 2. Fetch geoBoundaries Reference
+        with st.spinner(f"Downloading {iso_code} borders..."):
+            api_url = f"https://www.geoboundaries.org/api/current/gbOpen/{iso_code}/ADM0/"
+            r = requests.get(api_url).json()
+            border_gdf = gpd.read_file(r['gjDownloadURL'])
 
-        # 3. Process: Snap & Merge
-        # Buffer slightly to ensure "touching" then intersect
-        buffered_user = user_gdf.geometry.buffer(snap_dist)
-        snapped = unary_union(buffered_user).intersection(border_gdf.unary_union)
-        
-        # Merge with original to keep internal shape but use border edge
-        final_union = unary_union([user_gdf.unary_union, snapped])
-        
-        # Collapse into one contiguous polygon
-        if isinstance(final_union, MultiPolygon):
-            # Take the largest contiguous piece
-            final_poly = max(final_union.geoms, key=lambda a: a.area)
-        else:
-            final_poly = final_union
+        # 3. Process: Snap, Intersect, and Merge
+        with st.spinner("Snapping and merging geometries..."):
+            # Ensure everything is a single geometry for processing
+            user_geom = user_gdf.unary_union
+            border_geom = border_gdf.unary_union
+            
+            # Snap: Intersection with a slight buffer to ensure overlap
+            snapped = user_geom.buffer(snap_buffer).intersection(border_geom)
+            
+            # Combine original with snapped result and dissolve
+            combined = unary_union([user_geom, snapped])
+            
+            # Requirement: One Contiguous Polygon
+            # If the result is a MultiPolygon, we take the largest area to ensure contiguity
+            if isinstance(combined, MultiPolygon):
+                final_geom = max(combined.geoms, key=lambda a: a.area)
+            else:
+                final_geom = combined
 
-        output_gdf = gpd.GeoDataFrame(geometry=[final_poly], crs="EPSG:4326")
+            result_gdf = gpd.GeoDataFrame(geometry=[final_geom], crs="EPSG:4326")
 
-        # 4. Success and Downloads
-        st.success("Polygon snapped and merged!")
-        
-        col1, col2 = st.columns(2)
-        
-        # GeoJSON Export
-        geojson_data = output_gdf.to_json()
-        col1.download_button("Download GeoJSON", geojson_data, "snapped_output.geojson", "application/json")
-        
-        # KML Export (Temporary file handling)
-        output_gdf.to_file("temp.kml", driver='KML')
-        with open("temp.kml", "rb") as f:
-            col2.download_button("Download KML", f, "snapped_output.kml", "application/vnd.google-earth.kml+xml")
+        # --- Display Results ---
+        col1, col2 = st.columns([2, 1])
+
+        with col1:
+            st.subheader("Map Preview")
+            # Create Folium Map
+            m = folium.Map(location=[final_geom.centroid.y, final_geom.centroid.x], zoom_start=6)
+            
+            # Style for the layers
+            folium.GeoJson(border_gdf, name="International Border", 
+                           style_function=lambda x: {'color': 'red', 'fillOpacity': 0}).add_to(m)
+            folium.GeoJson(result_gdf, name="Snapped Result", 
+                           style_function=lambda x: {'color': 'blue', 'fillColor': 'blue'}).add_to(m)
+            
+            folium.LayerControl().add_to(m)
+            st_folium(m, width=700, height=500)
+
+        with col2:
+            st.subheader("Export Data")
+            # GeoJSON Download
+            geojson_str = result_gdf.to_json()
+            st.download_button("💾 Download GeoJSON", geojson_str, "snapped.geojson", "application/json")
+
+            # KML Download
+            tmp_kml = "temp_output.kml"
+            result_gdf.to_file(tmp_kml, driver='KML')
+            with open(tmp_kml, "rb") as f:
+                st.download_button("💾 Download KML", f, "snapped.kml", "application/vnd.google-earth.kml+xml")
+            os.remove(tmp_kml)
 
     except Exception as e:
-        st.error(f"Error: {e}")
+        st.error(f"Error processing files: {e}")
+else:
+    st.info("Please upload a file and enter an ISO code in the sidebar to begin.")
