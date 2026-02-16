@@ -10,7 +10,6 @@ from folium.plugins import Draw
 # --- Configuration ---
 st.set_page_config(page_title="Geospatial Border Tool", layout="wide")
 
-# Professional UI styling
 st.markdown("""
     <style>
     .main { background-color: #ffffff; }
@@ -26,14 +25,13 @@ st.markdown("""
         background-color: #333333;
         color: white;
     }
-    .reportview-container .main .block-container {
-        padding-top: 2rem;
-    }
     </style>
     """, unsafe_allow_html=True)
 
 @st.cache_data(show_spinner=False)
 def fetch_boundary(country_name):
+    if not country_name:
+        return None
     try:
         iso = pycountry.countries.get(name=country_name).alpha_3
         url = f"https://www.geoboundaries.org/api/current/gbOpen/{iso}/ADM0/"
@@ -55,7 +53,13 @@ col_map, col_sidebar = st.columns([3, 1])
 with col_sidebar:
     st.subheader("Parameters")
     country_list = sorted([c.name for c in pycountry.countries])
-    selected_target = st.selectbox("Country Selection", country_list, index=country_list.index("Switzerland"))
+    # Initial state is empty
+    selected_target = st.selectbox(
+        "Country Selection", 
+        country_list, 
+        index=None, 
+        placeholder="Select a jurisdiction..."
+    )
     
     boundary_gdf = fetch_boundary(selected_target)
     
@@ -63,7 +67,7 @@ with col_sidebar:
     st.subheader("Output")
     
     if st.session_state.active_result is not None:
-        st.info("Intersection processed successfully.")
+        st.info("Intersection processed.")
         
         st.download_button(
             label="Export GeoJSON",
@@ -76,26 +80,26 @@ with col_sidebar:
             st.session_state.active_result = None
             st.rerun()
     else:
-        st.write("Awaiting geometry input via map interface.")
+        st.write("Awaiting selection and input.")
 
 with col_map:
-    # Set initial view to the target country's bounds
+    # Handle map centering and bounds
     if boundary_gdf is not None:
         b = boundary_gdf.total_bounds
         map_center = [(b[1] + b[3]) / 2, (b[0] + b[2]) / 2]
-        m = folium.Map(location=map_center, zoom_start=7, tiles='CartoDB Positron')
+        m = folium.Map(location=map_center, zoom_start=6, tiles='CartoDB Positron')
         m.fit_bounds([[b[1], b[0]], [b[3], b[2]]])
         
-        # Reference Boundary (Static)
+        # Reference Boundary
         folium.GeoJson(
             boundary_gdf, 
             style_function=lambda x: {'color': '#1a1a1a', 'fillOpacity': 0.02, 'weight': 0.8},
             interactive=False
         ).add_to(m)
     else:
-        m = folium.Map(tiles='CartoDB Positron')
+        # Neutral world view if no country is selected
+        m = folium.Map(location=[20, 0], zoom_start=2, tiles='CartoDB Positron')
 
-    # Preview of the clipped result (Primary focus)
     if st.session_state.active_result is not None:
         folium.GeoJson(
             st.session_state.active_result,
@@ -107,34 +111,27 @@ with col_map:
             }
         ).add_to(m)
 
-    # Drawing controls
     Draw(
         export=False,
         position='topleft',
         draw_options={
-            'polyline': False,
-            'circle': False,
-            'marker': False,
-            'circlemarker': False,
-            'polygon': True,
-            'rectangle': True
+            'polyline': False, 'circle': False, 'marker': False, 
+            'circlemarker': False, 'polygon': True, 'rectangle': True
         }
     ).add_to(m)
 
     map_interaction = st_folium(m, width="100%", height=650, key="workbench_map")
 
-# --- Processing Engine ---
-if map_interaction and map_interaction.get('all_drawings'):
+# --- Processing ---
+if map_interaction and map_interaction.get('all_drawings') and boundary_gdf is not None:
     latest_drawing = map_interaction['all_drawings'][-1]
     raw_shape = shape(latest_drawing['geometry'])
     
-    if raw_shape.is_valid and boundary_gdf is not None:
+    if raw_shape.is_valid:
         input_gdf = gpd.GeoDataFrame(geometry=[raw_shape], crs="EPSG:4326")
-        # Direct intersection logic
         processed_intersection = gpd.overlay(input_gdf, boundary_gdf, how='intersection')
         
         if not processed_intersection.empty:
-            # Update state only if result differs to manage performance
             if st.session_state.active_result is None or not processed_intersection.equals(st.session_state.active_result):
                 st.session_state.active_result = processed_intersection
                 st.rerun()
