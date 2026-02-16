@@ -27,92 +27,85 @@ def load_data(file):
     fname = file.name.lower()
     if fname.endswith('.kmz'):
         with ZipFile(file, 'r') as kmz:
-            kml_name = [f for f in kmz.namelist() if f.endswith('.kml')][0]
-            with kmz.open(kml_name, 'r') as kml_file:
+            kml_names = [f for f in kmz.namelist() if f.endswith('.kml')]
+            with kmz.open(kml_names[0], 'r') as kml_file:
                 return gpd.read_file(kml_file, driver='KML')
     return gpd.read_file(file)
 
 # --- Main UI ---
 st.title("Global Border Snapper")
-st.markdown("Snap polygons to international borders. Optimized for high-detail Mapbox uploads.")
+st.markdown("Selective snapping: Magnetize edges near borders while keeping internal lines intact.")
 
 with st.container(border=True):
-    uploaded_file = st.file_uploader("1. Upload Polygon (GeoJSON, KML, KMZ)", type=['geojson', 'kml', 'kmz'])
+    uploaded_file = st.file_uploader("1. Upload Polygon", type=['geojson', 'kml', 'kmz'])
     selected_country = st.selectbox("2. Target Country", options=countries)
     
-    point_density = 0.0005 
+    # 0.005 degrees is approx 500m. This is the "magnet" reach.
+    snap_distance = st.slider("Snap Sensitivity (Degrees)", 0.001, 0.02, 0.005, format="%.3f")
 
     if st.button("Process and Snap", use_container_width=True):
         if uploaded_file:
             try:
-                with st.status("Snapping to international border...") as status:
+                with st.status("Performing Selective Snap...") as status:
                     iso_code = get_iso3(selected_country)
                     
                     # 1. Load User Data
                     user_gdf = load_data(uploaded_file).to_crs(epsg=4326)
-                    # Force valid geometry
-                    user_gdf['geometry'] = user_gdf.make_valid()
                     user_geom = user_gdf.unary_union
 
-                    # 2. Fetch geoBoundaries
+                    # 2. Fetch official border
                     api_url = f"https://www.geoboundaries.org/api/current/gbOpen/{iso_code}/ADM0/"
                     r = requests.get(api_url).json()
                     border_gdf = gpd.read_file(r['gjDownloadURL'])
                     border_geom = border_gdf.unary_union
 
-                    # 3. Snap Logic: Increase buffer to 0.01 (~1km) to ensure we hit the border
-                    snapped_segment = user_geom.buffer(0.01).intersection(border_geom)
+                    # 3. SELECTIVE SNAP LOGIC
+                    # Create a "search zone" around your polygon edges
+                    search_zone = user_geom.boundary.buffer(snap_distance)
                     
-                    # Combine original data with snapped segment
-                    # This ensures even if the snap fails, your original data is returned
-                    final_union = unary_union([user_geom, snapped_segment])
+                    # Find only the parts of the international border that fall inside that search zone
+                    relevant_border_segments = border_geom.intersection(search_zone)
                     
-                    if final_union.is_empty:
-                        st.error("Snapping failed: Resulting geometry is empty.")
+                    # Merge those specific border segments into your original polygon
+                    # This "increases or decreases" the edge to meet the border
+                    final_union = unary_union([user_geom, relevant_border_segments])
+                    
+                    # Cleanup: Ensure it remains a solid polygon (filling small slivers)
+                    final_poly_geom = final_union.buffer(0.00001).buffer(-0.00001)
+
+                    if isinstance(final_poly_geom, MultiPolygon):
+                        final_poly = max(final_poly_geom.geoms, key=lambda a: a.area)
                     else:
-                        if isinstance(final_union, MultiPolygon):
-                            final_poly = max(final_union.geoms, key=lambda a: a.area)
-                        else:
-                            final_poly = final_union
+                        final_poly = final_poly_geom
 
-                        # 4. Densification
-                        final_poly = final_poly.segmentize(max_segment_length=point_density)
+                    # 4. Densification for Mapbox
+                    final_poly = final_poly.segmentize(max_segment_length=0.0005)
 
-                        st.session_state.result_gdf = gpd.GeoDataFrame(geometry=[final_poly], crs="EPSG:4326")
-                        status.update(label="Processing Complete", state="complete")
+                    st.session_state.result_gdf = gpd.GeoDataFrame(geometry=[final_poly], crs="EPSG:4326")
+                    status.update(label="Processing Complete", state="complete")
             except Exception as e:
                 st.error(f"Error: {e}")
-        else:
-            st.warning("Please upload a file first.")
 
 # --- Results Area ---
 if st.session_state.result_gdf is not None:
     res = st.session_state.result_gdf
-    
-    # Ensure bounds are not NaN before drawing
     bounds = res.total_bounds
-    if None not in bounds and not any(map(lambda x: str(x) == 'nan', bounds)):
+    
+    if not any(map(lambda x: str(x) == 'nan', bounds)):
         map_bounds = [[bounds[1], bounds[0]], [bounds[3], bounds[2]]]
-
         st.divider()
         st.subheader("Preview and Export")
         
         m = folium.Map(tiles='OpenStreetMap')
         m.fit_bounds(map_bounds)
-        
-        folium.GeoJson(
-            res, 
-            style_function=lambda x: {'color': '#0000FF', 'weight': 2, 'fillOpacity': 0.2}
-        ).add_to(m)
-        
+        folium.GeoJson(res, style_function=lambda x: {'color': '#0000FF', 'weight': 2, 'fillOpacity': 0.2}).add_to(m)
         st_folium(m, width=700, height=500, key="persistent_map")
 
-        geojson_out = res.to_json(na='null', show_bbox=False, drop_id=True)
-        st.download_button("Download GeoJSON", geojson_out, "snapped_polygon.geojson", use_container_width=True)
+        c1, c2 = st.columns(2)
+        geojson_out = res.to_json()
+        c1.download_button("Download GeoJSON", geojson_out, "snapped.geojson", use_container_width=True)
         
-        res.to_file("temp_out.kml", driver='KML')
-        with open("temp_out.kml", "rb") as f:
-            st.download_button("Download KML", f, "snapped_polygon.kml", use_container_width=True)
-        os.remove("temp_out.kml")
-    else:
-        st.warning("The output geometry is invalid or empty. Try increasing the buffer or check your source file.")
+        res.to_file("temp.kml", driver='KML')
+        with open("temp.kml", "rb") as f:
+            c2.download_button("Download KML", f, "snapped.kml", use_container_width=True)
+        os.remove("temp.kml")
