@@ -4,6 +4,7 @@ import requests
 import fiona
 import os
 import pycountry
+import tempfile
 from zipfile import ZipFile
 from shapely.geometry import MultiPolygon
 from streamlit_folium import st_folium
@@ -16,8 +17,6 @@ st.set_page_config(page_title="Global Border Snapper", layout="centered")
 # --- Session State Initialization ---
 if 'result_gdf' not in st.session_state:
     st.session_state.result_gdf = None
-if 'original_gdf' not in st.session_state:
-    st.session_state.original_gdf = None
 
 # --- Helpers ---
 countries = sorted([c.name for c in pycountry.countries])
@@ -25,22 +24,35 @@ countries = sorted([c.name for c in pycountry.countries])
 def get_iso3(name):
     return pycountry.countries.get(name=name).alpha_3
 
-def load_data(file):
-    fname = file.name.lower()
-    # KML/KMZ often contain multiple layers. We need to read and combine them.
-    if fname.endswith('.kmz'):
-        with ZipFile(file, 'r') as kmz:
-            kml_name = [f for f in kmz.namelist() if f.endswith('.kml')][0]
-            with kmz.open(kml_name, 'r') as kml_file:
-                layers = fiona.listlayers(kml_file)
-                gdfs = [gpd.read_file(kml_file, layer=l, driver='KML') for l in layers]
-                return gpd.pd.concat(gdfs, ignore_index=True)
-    elif fname.endswith('.kml'):
-        layers = fiona.listlayers(file)
-        gdfs = [gpd.read_file(file, layer=l, driver='KML') for l in layers]
-        return gpd.pd.concat(gdfs, ignore_index=True)
+def load_data(uploaded_file):
+    fname = uploaded_file.name.lower()
     
-    return gpd.read_file(file)
+    # Use a temporary physical file to avoid driver/vsimem errors
+    with tempfile.NamedTemporaryFile(delete=False, suffix=os.path.splitext(fname)[1]) as tmp:
+        tmp.write(uploaded_file.getvalue())
+        tmp_path = tmp.name
+
+    try:
+        if fname.endswith('.kmz'):
+            with ZipFile(tmp_path, 'r') as kmz:
+                kml_name = [f for f in kmz.namelist() if f.endswith('.kml')][0]
+                kmz.extract(kml_name, path=tempfile.gettempdir())
+                extracted_kml = os.path.join(tempfile.gettempdir(), kml_name)
+                
+                layers = fiona.listlayers(extracted_kml)
+                gdfs = [gpd.read_file(extracted_kml, layer=l, driver='KML') for l in layers]
+                return gpd.pd.concat(gdfs, ignore_index=True)
+        
+        elif fname.endswith('.kml'):
+            layers = fiona.listlayers(tmp_path)
+            gdfs = [gpd.read_file(tmp_path, layer=l, driver='KML') for l in layers]
+            return gpd.pd.concat(gdfs, ignore_index=True)
+        
+        else:
+            return gpd.read_file(tmp_path)
+    finally:
+        if os.path.exists(tmp_path):
+            os.remove(tmp_path)
 
 # --- Main UI ---
 st.title("Global Border Snapper")
@@ -50,6 +62,7 @@ with st.container(border=True):
     uploaded_file = st.file_uploader("1. Upload Polygon (GeoJSON, KML, KMZ)", type=['geojson', 'kml', 'kmz'])
     selected_country = st.selectbox("2. Target Country", options=countries)
     
+    # 0.0005 degrees (~50m) prevents Mapbox from simplifying complex border edges
     point_density = 0.0005 
 
     if st.button("Process and Snap", use_container_width=True):
@@ -58,14 +71,11 @@ with st.container(border=True):
                 with st.status("Processing geospatial data...") as status:
                     iso_code = get_iso3(selected_country)
                     
-                    # 1. Load User Data and combine all layers
+                    # 1. Load User Data
                     raw_gdf = load_data(uploaded_file)
                     if raw_gdf.crs is None:
                         raw_gdf.set_crs(epsg=4326, inplace=True)
                     user_gdf = raw_gdf.to_crs(epsg=4326)
-                    
-                    # Store original for comparison
-                    st.session_state.original_gdf = user_gdf.copy()
                     
                     # Modern replacement for unary_union
                     user_geom = user_gdf.geometry.union_all()
@@ -78,9 +88,9 @@ with st.container(border=True):
 
                     # 3. Snap and Merge Logic
                     snapped_segment = user_geom.buffer(0.005).intersection(border_geom)
-                    final_union = unary_union([user_geom, snapped_segment]) if hasattr(user_geom, 'union') else user_geom.union(snapped_segment)
+                    final_union = user_geom.union(snapped_segment)
                     
-                    # Handle contiguous requirement
+                    # One contiguous polygon: take largest part
                     if isinstance(final_union, MultiPolygon):
                         final_poly = max(final_union.geoms, key=lambda a: a.area)
                     else:
@@ -98,38 +108,13 @@ with st.container(border=True):
         else:
             st.warning("Please upload a file first.")
 
-# --- Results Area ---
+# --- Persistent Results Area ---
 if st.session_state.result_gdf is not None:
     res = st.session_state.result_gdf
-    orig = st.session_state.original_gdf
     
     st.divider()
     st.subheader("Preview and Export")
-    st.caption("Red: Original | Blue: Snapped result")
     
+    # Bounds for auto-fit
     bounds = res.total_bounds
-    map_bounds = [[bounds[1], bounds[0]], [bounds[3], bounds[2]]]
-
-    m = folium.Map(tiles='OpenStreetMap')
-    m.fit_bounds(map_bounds)
-    
-    folium.GeoJson(
-        orig, 
-        style_function=lambda x: {'color': '#FF0000', 'weight': 2, 'fillOpacity': 0, 'dashArray': '5, 5'}
-    ).add_to(m)
-
-    folium.GeoJson(
-        res, 
-        style_function=lambda x: {'color': '#0000FF', 'weight': 2, 'fillOpacity': 0.2}
-    ).add_to(m)
-    
-    st_folium(m, width=700, height=500, key="fixed_preview_map")
-
-    c1, c2 = st.columns(2)
-    geojson_out = res.to_json(na='null', show_bbox=False, drop_id=True)
-    c1.download_button("Download GeoJSON", geojson_out, "snapped.geojson", use_container_width=True)
-    
-    res.to_file("temp_out.kml", driver='KML')
-    with open("temp_out.kml", "rb") as f:
-        c2.download_button("Download KML", f, "snapped.kml", use_container_width=True)
-    os.remove("temp_out.kml")
+    map_bounds = [[bounds
