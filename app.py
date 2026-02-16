@@ -2,6 +2,9 @@ import streamlit as st
 import geopandas as gpd
 import requests
 import pycountry
+import tempfile
+import os
+import fiona
 from shapely.geometry import shape
 from streamlit_folium import st_folium
 import folium
@@ -9,6 +12,10 @@ from folium.plugins import Draw
 
 # --- Configuration ---
 st.set_page_config(page_title="Geospatial Border Tool", layout="wide")
+
+# Enable KML drivers in fiona
+if 'KML' not in fiona.supported_drivers:
+    fiona.supported_drivers['KML'] = 'rw'
 
 st.markdown("""
     <style>
@@ -53,7 +60,6 @@ col_map, col_sidebar = st.columns([3, 1])
 with col_sidebar:
     st.subheader("Parameters")
     country_list = sorted([c.name for c in pycountry.countries])
-    # Initial state is empty
     selected_target = st.selectbox(
         "Country Selection", 
         country_list, 
@@ -64,40 +70,58 @@ with col_sidebar:
     boundary_gdf = fetch_boundary(selected_target)
     
     st.markdown("---")
-    st.subheader("Output")
+    st.subheader("Export Options")
     
     if st.session_state.active_result is not None:
         st.info("Intersection processed.")
         
+        # GeoJSON Export
         st.download_button(
-            label="Export GeoJSON",
+            label="Download GeoJSON",
             data=st.session_state.active_result.to_json(),
-            file_name=f"{selected_target}_clipped.geojson",
-            mime="application/json"
+            file_name=f"{selected_target}_sculpted.geojson",
+            mime="application/json",
+            use_container_width=True
         )
         
-        if st.button("Clear Geometry"):
+        # KML Export Logic
+        try:
+            with tempfile.NamedTemporaryFile(delete=False, suffix='.kml') as tmp:
+                # KML only supports certain geometry types; simplify or ensure 2D if needed
+                st.session_state.active_result.to_file(tmp.name, driver='KML')
+                with open(tmp.name, "rb") as f:
+                    kml_data = f.read()
+                
+                st.download_button(
+                    label="Download KML",
+                    data=kml_data,
+                    file_name=f"{selected_target}_sculpted.kml",
+                    mime="application/vnd.google-earth.kml+xml",
+                    use_container_width=True
+                )
+            os.remove(tmp.name)
+        except Exception as e:
+            st.error("KML conversion is currently unavailable for this geometry.")
+        
+        if st.button("Clear Canvas"):
             st.session_state.active_result = None
             st.rerun()
     else:
         st.write("Awaiting selection and input.")
 
 with col_map:
-    # Handle map centering and bounds
     if boundary_gdf is not None:
         b = boundary_gdf.total_bounds
         map_center = [(b[1] + b[3]) / 2, (b[0] + b[2]) / 2]
         m = folium.Map(location=map_center, zoom_start=6, tiles='CartoDB Positron')
         m.fit_bounds([[b[1], b[0]], [b[3], b[2]]])
         
-        # Reference Boundary
         folium.GeoJson(
             boundary_gdf, 
             style_function=lambda x: {'color': '#1a1a1a', 'fillOpacity': 0.02, 'weight': 0.8},
             interactive=False
         ).add_to(m)
     else:
-        # Neutral world view if no country is selected
         m = folium.Map(location=[20, 0], zoom_start=2, tiles='CartoDB Positron')
 
     if st.session_state.active_result is not None:
@@ -122,7 +146,7 @@ with col_map:
 
     map_interaction = st_folium(m, width="100%", height=650, key="workbench_map")
 
-# --- Processing ---
+# --- Processing Logic ---
 if map_interaction and map_interaction.get('all_drawings') and boundary_gdf is not None:
     latest_drawing = map_interaction['all_drawings'][-1]
     raw_shape = shape(latest_drawing['geometry'])
