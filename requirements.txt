@@ -1,9 +1,6 @@
 streamlit
-requests
-pandas
-shapely
-pyproj
 geopandas
-folium
-streamlit-folium
-pycountry
+shapely
+requests
+fiona
+pyproj
