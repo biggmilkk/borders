@@ -5,11 +5,9 @@ import fiona
 import os
 import pycountry
 import tempfile
+import pandas as pd
 from zipfile import ZipFile
 from shapely.geometry import MultiPolygon
-# Import folium_static for higher reliability
-from streamlit_folium import folium_static 
-import folium
 
 # Setup drivers
 fiona.supported_drivers['KML'] = 'rw'
@@ -46,7 +44,7 @@ def load_data(uploaded_file):
             os.remove(tmp_path)
 
 st.title("Global Border Snapper")
-st.markdown("Snap polygons to international borders for high-detail Mapbox uploads.")
+st.markdown("Snap polygons to international borders. Minimal and professional.")
 
 with st.container(border=True):
     uploaded_file = st.file_uploader("1. Upload Polygon (GeoJSON, KML, KMZ)", type=['geojson', 'kml', 'kmz'])
@@ -65,7 +63,7 @@ with st.container(border=True):
                     user_gdf = raw_gdf.to_crs(epsg=4326)
                     user_geom = user_gdf.geometry.union_all()
 
-                    # Border Fetch
+                    # Fetch Border
                     api_url = f"https://www.geoboundaries.org/api/current/gbOpen/{iso_code}/ADM0/"
                     r = requests.get(api_url).json()
                     border_gdf = gpd.read_file(r['gjDownloadURL'])
@@ -80,7 +78,7 @@ with st.container(border=True):
                     else:
                         final_poly = final_union
 
-                    # High-density anchor points
+                    # High-density anchor points for Mapbox
                     final_poly = final_poly.segmentize(max_segment_length=0.0005)
 
                     st.session_state.result_gdf = gpd.GeoDataFrame(geometry=[final_poly], crs="EPSG:4326")
@@ -88,28 +86,23 @@ with st.container(border=True):
             except Exception as e:
                 st.error(f"Error: {e}")
 
-# --- Results Area ---
+# --- Results Area (Native Component) ---
 if st.session_state.result_gdf is not None:
     st.divider()
     st.subheader("Preview and Export")
     
     res_gdf = st.session_state.result_gdf
-    bounds = res_gdf.total_bounds # [minx, miny, maxx, maxy]
     
-    # Initialize Map
-    m = folium.Map(tiles='OpenStreetMap', control_scale=True)
-    
-    # Fit map to bounds
-    m.fit_bounds([[bounds[1], bounds[0]], [bounds[3], bounds[2]]])
-    
-    folium.GeoJson(
-        res_gdf, 
-        style_function=lambda x: {'color': '#0000FF', 'weight': 2, 'fillOpacity': 0.2}
-    ).add_to(m)
-    
-    # Use folium_static for maximum browser compatibility
-    folium_static(m, width=700, height=500)
+    # Use st.map for guaranteed visibility
+    # We extract coordinates for the map component
+    st.map(res_gdf)
 
-    # Download
+    # Download Section
     geojson_out = res_gdf.to_json(na='null', show_bbox=False, drop_id=True)
     st.download_button("Download GeoJSON", geojson_out, "snapped.geojson", use_container_width=True)
+    
+    with tempfile.NamedTemporaryFile(delete=False, suffix='.kml') as tmp_kml:
+        res_gdf.to_file(tmp_kml.name, driver='KML')
+        with open(tmp_kml.name, "rb") as f:
+            st.download_button("Download KML", f, "snapped.kml", use_container_width=True)
+    os.remove(tmp_kml.name)
