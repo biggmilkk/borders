@@ -5,4 +5,4 @@ geopandas
 shapely
 requests
 fiona
-pyproj
+pycountry
