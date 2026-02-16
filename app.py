@@ -14,7 +14,6 @@ import folium
 fiona.supported_drivers['KML'] = 'rw'
 st.set_page_config(page_title="Global Border Snapper", layout="centered")
 
-# Initialize session state for persistence
 if 'result_gdf' not in st.session_state:
     st.session_state.result_gdf = None
 
@@ -41,7 +40,6 @@ with st.container(border=True):
     uploaded_file = st.file_uploader("1. Upload Polygon (GeoJSON, KML, KMZ)", type=['geojson', 'kml', 'kmz'])
     selected_country = st.selectbox("2. Target Country", options=countries)
     
-    # 0.0005 degrees (~50m) provides the density needed for complex borders
     point_density = 0.0005 
 
     if st.button("Process and Snap", use_container_width=True):
@@ -52,6 +50,8 @@ with st.container(border=True):
                     
                     # 1. Load User Data
                     user_gdf = load_data(uploaded_file).to_crs(epsg=4326)
+                    # Force valid geometry
+                    user_gdf['geometry'] = user_gdf.make_valid()
                     user_geom = user_gdf.unary_union
 
                     # 2. Fetch geoBoundaries
@@ -60,62 +60,59 @@ with st.container(border=True):
                     border_gdf = gpd.read_file(r['gjDownloadURL'])
                     border_geom = border_gdf.unary_union
 
-                    # 3. Snap and Merge Logic
-                    snapped_segment = user_geom.buffer(0.005).intersection(border_geom)
+                    # 3. Snap Logic: Increase buffer to 0.01 (~1km) to ensure we hit the border
+                    snapped_segment = user_geom.buffer(0.01).intersection(border_geom)
+                    
+                    # Combine original data with snapped segment
+                    # This ensures even if the snap fails, your original data is returned
                     final_union = unary_union([user_geom, snapped_segment])
                     
-                    # Single Contiguous Requirement
-                    if isinstance(final_union, MultiPolygon):
-                        final_poly = max(final_union.geoms, key=lambda a: a.area)
+                    if final_union.is_empty:
+                        st.error("Snapping failed: Resulting geometry is empty.")
                     else:
-                        final_poly = final_union
+                        if isinstance(final_union, MultiPolygon):
+                            final_poly = max(final_union.geoms, key=lambda a: a.area)
+                        else:
+                            final_poly = final_union
 
-                    # 4. Mapbox Optimization (Densification)
-                    final_poly = final_poly.segmentize(max_segment_length=point_density)
+                        # 4. Densification
+                        final_poly = final_poly.segmentize(max_segment_length=point_density)
 
-                    st.session_state.result_gdf = gpd.GeoDataFrame(geometry=[final_poly], crs="EPSG:4326")
-                    status.update(label="Processing Complete", state="complete")
+                        st.session_state.result_gdf = gpd.GeoDataFrame(geometry=[final_poly], crs="EPSG:4326")
+                        status.update(label="Processing Complete", state="complete")
             except Exception as e:
                 st.error(f"Error: {e}")
         else:
             st.warning("Please upload a file first.")
 
-# --- Persistent Results Area ---
+# --- Results Area ---
 if st.session_state.result_gdf is not None:
     res = st.session_state.result_gdf
     
-    # Calculate bounds for the map to fit the whole polygon
-    # bounds is [[min_lat, min_lon], [max_lat, max_lon]]
+    # Ensure bounds are not NaN before drawing
     bounds = res.total_bounds
-    map_bounds = [[bounds[1], bounds[0]], [bounds[3], bounds[2]]]
+    if None not in bounds and not any(map(lambda x: str(x) == 'nan', bounds)):
+        map_bounds = [[bounds[1], bounds[0]], [bounds[3], bounds[2]]]
 
-    st.divider()
-    st.subheader("Preview and Export")
-    
-    # Initialize map
-    m = folium.Map(tiles='OpenStreetMap')
-    
-    # Fit the map to the polygon boundaries
-    m.fit_bounds(map_bounds)
-    
-    folium.GeoJson(
-        res, 
-        style_function=lambda x: {
-            'color': '#0000FF', 
-            'weight': 2, 
-            'fillOpacity': 0.2
-        }
-    ).add_to(m)
-    
-    st_folium(m, width=700, height=500, key="persistent_map")
+        st.divider()
+        st.subheader("Preview and Export")
+        
+        m = folium.Map(tiles='OpenStreetMap')
+        m.fit_bounds(map_bounds)
+        
+        folium.GeoJson(
+            res, 
+            style_function=lambda x: {'color': '#0000FF', 'weight': 2, 'fillOpacity': 0.2}
+        ).add_to(m)
+        
+        st_folium(m, width=700, height=500, key="persistent_map")
 
-    # Downloads
-    c1, c2 = st.columns(2)
-    
-    geojson_out = res.to_json(na='null', show_bbox=False, drop_id=True)
-    c1.download_button("Download GeoJSON", geojson_out, "snapped_polygon.geojson", use_container_width=True)
-    
-    res.to_file("temp_out.kml", driver='KML')
-    with open("temp_out.kml", "rb") as f:
-        c2.download_button("Download KML", f, "snapped_polygon.kml", use_container_width=True)
-    os.remove("temp_out.kml")
+        geojson_out = res.to_json(na='null', show_bbox=False, drop_id=True)
+        st.download_button("Download GeoJSON", geojson_out, "snapped_polygon.geojson", use_container_width=True)
+        
+        res.to_file("temp_out.kml", driver='KML')
+        with open("temp_out.kml", "rb") as f:
+            st.download_button("Download KML", f, "snapped_polygon.kml", use_container_width=True)
+        os.remove("temp_out.kml")
+    else:
+        st.warning("The output geometry is invalid or empty. Try increasing the buffer or check your source file.")
