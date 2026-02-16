@@ -16,7 +16,7 @@ st.set_page_config(page_title="Geospatial International Border Mapper", layout="
 if 'KML' not in fiona.supported_drivers:
     fiona.supported_drivers['KML'] = 'rw'
 
-# Professional UI styling for a single-column layout
+# Professional UI styling for a clean single-column layout
 st.markdown("""
     <style>
     .main { background-color: #ffffff; }
@@ -33,7 +33,6 @@ st.markdown("""
         background-color: #333333;
         color: white;
     }
-    /* Centers the selectbox and map container */
     .block-container {
         max-width: 900px;
         padding-top: 2rem;
@@ -57,13 +56,13 @@ def fetch_boundary(country_name):
 if 'active_result' not in st.session_state:
     st.session_state.active_result = None
 
-# --- Step 1: Header and Jurisdiction ---
+# --- Header and Jurisdiction ---
 st.title("Geospatial International Border Mapper")
 st.caption("Standardized clipping of user-defined geometries against official ADM0 international boundaries.")
 
 country_list = sorted([c.name for c in pycountry.countries])
 selected_target = st.selectbox(
-    "1. Select International Jurisdiction", 
+    "Select International Jurisdiction", 
     country_list, 
     index=None, 
     placeholder="Choose a country to load borders..."
@@ -71,9 +70,9 @@ selected_target = st.selectbox(
 
 boundary_gdf = fetch_boundary(selected_target)
 
-# --- Step 2: Spatial Workbench (Map) ---
+# --- Spatial Workbench (Map) ---
 st.markdown("---")
-st.subheader("2. Define Area of Interest")
+st.subheader("Define Area of Interest")
 if not selected_target:
     st.info("Select a jurisdiction above to activate the map.")
 
@@ -135,10 +134,10 @@ if map_interaction and map_interaction.get('all_drawings') and boundary_gdf is n
                 st.session_state.active_result = final_gdf
                 st.rerun()
 
-# --- Step 3: Export Options ---
+# --- Export Options ---
 if st.session_state.active_result is not None:
     st.markdown("---")
-    st.subheader("3. Export Results")
+    st.subheader("Export Results")
     
     export_gdf = st.session_state.active_result.copy()
     clean_name = selected_target.lower().replace(" ", "_")
