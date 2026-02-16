@@ -16,7 +16,7 @@ st.set_page_config(page_title="Geospatial International Border Mapper", layout="
 if 'KML' not in fiona.supported_drivers:
     fiona.supported_drivers['KML'] = 'rw'
 
-# Professional UI styling
+# Professional UI styling & Stability CSS
 st.markdown("""
     <style>
     .main { background-color: #ffffff; }
@@ -29,23 +29,46 @@ st.markdown("""
         border: none;
         margin-top: 10px;
     }
-    /* Reduces the 'gray out' opacity during loading */
-    .stApp [data-testid="stStatusWidget"] { display: none; }
-    .block-container { max-width: 900px; padding-top: 2rem; }
+    div.stButton > button:hover {
+        background-color: #333333;
+        color: white;
+    }
+    /* Disable the gray-out/fade effect during reruns */
+    div[data-testid="stOverlay"] {
+        background-color: transparent !important;
+        backdrop-filter: none !important;
+    }
+    .stAppViewMain {
+        filter: none !important;
+    }
+    /* Hide the top-right loading spinner */
+    [data-testid="stStatusWidget"] {
+        display: none;
+    }
+    .block-container {
+        max-width: 900px;
+        padding-top: 2rem;
+    }
     </style>
     """, unsafe_allow_html=True)
 
 @st.cache_data(show_spinner=False)
 def fetch_boundary(country_name):
-    if not country_name: return None
+    if not country_name:
+        return None
     try:
         iso = pycountry.countries.get(name=country_name).alpha_3
         url = f"https://www.geoboundaries.org/api/current/gbOpen/{iso}/ADM0/"
         r = requests.get(url, timeout=10).json()
         return gpd.read_file(r['gjDownloadURL'])
-    except Exception: return None
+    except Exception:
+        return None
 
-# --- Header ---
+# --- Persistence ---
+if 'active_result' not in st.session_state:
+    st.session_state.active_result = None
+
+# --- Header and Jurisdiction ---
 st.title("Geospatial International Border Mapper")
 st.caption("Standardized clipping of user-defined geometries against official ADM0 international boundaries.")
 
@@ -59,17 +82,20 @@ selected_target = st.selectbox(
 
 boundary_gdf = fetch_boundary(selected_target)
 
+# --- Spatial Workbench (Map) ---
 st.markdown("---")
 st.subheader("Define Area of Interest")
+if not selected_target:
+    st.info("Select a jurisdiction above to activate the map.")
 
-# --- Map Logic ---
-# We center the map only once when the country is selected
+# Map initialization
 if boundary_gdf is not None:
     b = boundary_gdf.total_bounds
     map_center = [(b[1] + b[3]) / 2, (b[0] + b[2]) / 2]
     m = folium.Map(location=map_center, zoom_start=6, tiles='CartoDB Positron')
     m.fit_bounds([[b[1], b[0]], [b[3], b[2]]])
     
+    # Official Boundary (Reference)
     folium.GeoJson(
         boundary_gdf, 
         style_function=lambda x: {'color': '#1a1a1a', 'fillOpacity': 0.02, 'weight': 0.8},
@@ -78,23 +104,38 @@ if boundary_gdf is not None:
 else:
     m = folium.Map(location=[20, 0], zoom_start=2, tiles='CartoDB Positron')
 
-# Add existing result to map if present
-if "active_result" in st.session_state and st.session_state.active_result is not None:
+# Display result preview
+if st.session_state.active_result is not None:
     folium.GeoJson(
         st.session_state.active_result,
-        style_function=lambda x: {'color': '#0047AB', 'fillColor': '#0047AB', 'fillOpacity': 0.3, 'weight': 2}
+        style_function=lambda x: {
+            'color': '#0047AB', 
+            'fillColor': '#0047AB', 
+            'fillOpacity': 0.3, 
+            'weight': 2
+        }
     ).add_to(m)
 
+# Drawing Tools
 Draw(
     export=False,
     position='topleft',
-    draw_options={'polyline': False, 'circle': False, 'marker': False, 'circlemarker': False, 'polygon': True, 'rectangle': True}
+    draw_options={
+        'polyline': False, 'circle': False, 'marker': False, 
+        'circlemarker': False, 'polygon': True, 'rectangle': True
+    }
 ).add_to(m)
 
-# Execute map and capture data
-map_interaction = st_folium(m, width="100%", height=550, key="workbench_map")
+# The 'returned_objects' parameter prevents zooms from triggering app-wide fades
+map_interaction = st_folium(
+    m, 
+    width="100%", 
+    height=550, 
+    key="workbench_map",
+    returned_objects=["all_drawings"]
+)
 
-# --- Logic Processing ---
+# --- Processing Logic ---
 if map_interaction and map_interaction.get('all_drawings') and boundary_gdf is not None:
     latest_drawing = map_interaction['all_drawings'][-1]
     raw_shape = shape(latest_drawing['geometry'])
@@ -105,15 +146,16 @@ if map_interaction and map_interaction.get('all_drawings') and boundary_gdf is n
         
         if not processed_intersection.empty:
             final_gdf = processed_intersection[['geometry']].copy()
-            # Check for changes to prevent redundant re-renders
-            if "active_result" not in st.session_state or st.session_state.active_result is None or not final_gdf.equals(st.session_state.active_result):
+            
+            # Update state only if result changed to maintain map stability
+            if st.session_state.active_result is None or not final_gdf.equals(st.session_state.active_result):
                 st.session_state.active_result = final_gdf
                 st.rerun()
 
-# --- Export Section (Isolated for Stability) ---
+# --- Export Section ---
 @st.fragment
 def export_section():
-    if "active_result" in st.session_state and st.session_state.active_result is not None:
+    if st.session_state.active_result is not None:
         st.markdown("---")
         st.subheader("Export Results")
         
@@ -136,15 +178,16 @@ def export_section():
                 with tempfile.NamedTemporaryFile(delete=False, suffix='.kml') as tmp:
                     export_gdf.to_file(tmp.name, driver='KML')
                     with open(tmp.name, "rb") as f:
-                        st.download_button(
-                            label="Download KML",
-                            data=f.read(),
-                            file_name=f"{final_filename}.kml",
-                            mime="application/vnd.google-earth.kml+xml"
-                        )
+                        kml_data = f.read()
+                    st.download_button(
+                        label="Download KML",
+                        data=kml_data,
+                        file_name=f"{final_filename}.kml",
+                        mime="application/vnd.google-earth.kml+xml"
+                    )
                 os.remove(tmp.name)
             except:
-                st.error("KML Unavailable")
+                st.error("KML export unavailable.")
                 
         with col_clear:
             if st.button("Reset Canvas"):
