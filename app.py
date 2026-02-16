@@ -11,9 +11,8 @@ import folium
 from folium.plugins import Draw
 
 # --- Configuration ---
-st.set_page_config(page_title="Geospatial Border Tool", layout="wide")
+st.set_page_config(page_title="Geospatial International Border Mapper", layout="wide")
 
-# Enable KML drivers in fiona
 if 'KML' not in fiona.supported_drivers:
     fiona.supported_drivers['KML'] = 'rw'
 
@@ -52,62 +51,64 @@ if 'active_result' not in st.session_state:
     st.session_state.active_result = None
 
 # --- Header ---
-st.title("Geospatial Border Sculptor")
-st.caption("Precision clipping of user-defined geometries against national administrative boundaries.")
+st.title("Geospatial International Border Mapper")
+st.caption("Standardized clipping of user-defined geometries against official ADM0 international boundaries.")
 
 col_map, col_sidebar = st.columns([3, 1])
 
 with col_sidebar:
-    st.subheader("Parameters")
+    st.subheader("Selection")
     country_list = sorted([c.name for c in pycountry.countries])
     selected_target = st.selectbox(
-        "Country Selection", 
+        "International Jurisdiction", 
         country_list, 
         index=None, 
-        placeholder="Select a jurisdiction..."
+        placeholder="Select a country..."
     )
     
     boundary_gdf = fetch_boundary(selected_target)
     
     st.markdown("---")
-    st.subheader("Export Options")
+    st.subheader("Export")
     
     if st.session_state.active_result is not None:
-        st.info("Intersection processed.")
+        st.info("Geometry intersection calculated.")
+        
+        # Prepare clean data for export (no descriptions/extra columns)
+        export_gdf = st.session_state.active_result[['geometry']].copy()
         
         # GeoJSON Export
         st.download_button(
             label="Download GeoJSON",
-            data=st.session_state.active_result.to_json(),
-            file_name=f"{selected_target}_sculpted.geojson",
+            data=export_gdf.to_json(),
+            file_name="country_border.geojson",
             mime="application/json",
             use_container_width=True
         )
         
-        # KML Export Logic
+        # KML Export
         try:
             with tempfile.NamedTemporaryFile(delete=False, suffix='.kml') as tmp:
-                # KML only supports certain geometry types; simplify or ensure 2D if needed
-                st.session_state.active_result.to_file(tmp.name, driver='KML')
+                export_gdf.to_file(tmp.name, driver='KML')
                 with open(tmp.name, "rb") as f:
                     kml_data = f.read()
                 
                 st.download_button(
                     label="Download KML",
                     data=kml_data,
-                    file_name=f"{selected_target}_sculpted.kml",
+                    file_name="country_border.kml",
                     mime="application/vnd.google-earth.kml+xml",
                     use_container_width=True
                 )
             os.remove(tmp.name)
-        except Exception as e:
-            st.error("KML conversion is currently unavailable for this geometry.")
+        except Exception:
+            st.error("KML export failed for this geometry.")
         
-        if st.button("Clear Canvas"):
+        if st.button("Reset Canvas"):
             st.session_state.active_result = None
             st.rerun()
     else:
-        st.write("Awaiting selection and input.")
+        st.write("Awaiting selection and drawing input.")
 
 with col_map:
     if boundary_gdf is not None:
@@ -146,7 +147,7 @@ with col_map:
 
     map_interaction = st_folium(m, width="100%", height=650, key="workbench_map")
 
-# --- Processing Logic ---
+# --- Logic ---
 if map_interaction and map_interaction.get('all_drawings') and boundary_gdf is not None:
     latest_drawing = map_interaction['all_drawings'][-1]
     raw_shape = shape(latest_drawing['geometry'])
@@ -156,6 +157,9 @@ if map_interaction and map_interaction.get('all_drawings') and boundary_gdf is n
         processed_intersection = gpd.overlay(input_gdf, boundary_gdf, how='intersection')
         
         if not processed_intersection.empty:
-            if st.session_state.active_result is None or not processed_intersection.equals(st.session_state.active_result):
-                st.session_state.active_result = processed_intersection
+            # Strip all attributes to leave descriptions empty
+            final_gdf = processed_intersection[['geometry']]
+            
+            if st.session_state.active_result is None or not final_gdf.equals(st.session_state.active_result):
+                st.session_state.active_result = final_gdf
                 st.rerun()
