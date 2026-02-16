@@ -74,14 +74,18 @@ with col_sidebar:
     if st.session_state.active_result is not None:
         st.info("Geometry intersection calculated.")
         
-        # Prepare clean data for export (no descriptions/extra columns)
+        # Prepare clean data for export (only geometry, no descriptions)
         export_gdf = st.session_state.active_result[['geometry']].copy()
+        
+        # Format filename based on selection
+        clean_name = selected_target.lower().replace(" ", "_")
+        final_filename = f"{clean_name}_border"
         
         # GeoJSON Export
         st.download_button(
             label="Download GeoJSON",
             data=export_gdf.to_json(),
-            file_name="country_border.geojson",
+            file_name=f"{final_filename}.geojson",
             mime="application/json",
             use_container_width=True
         )
@@ -96,7 +100,7 @@ with col_sidebar:
                 st.download_button(
                     label="Download KML",
                     data=kml_data,
-                    file_name="country_border.kml",
+                    file_name=f"{final_filename}.kml",
                     mime="application/vnd.google-earth.kml+xml",
                     use_container_width=True
                 )
@@ -157,7 +161,7 @@ if map_interaction and map_interaction.get('all_drawings') and boundary_gdf is n
         processed_intersection = gpd.overlay(input_gdf, boundary_gdf, how='intersection')
         
         if not processed_intersection.empty:
-            # Strip all attributes to leave descriptions empty
+            # Ensure final GDF has only geometry to keep descriptions empty
             final_gdf = processed_intersection[['geometry']]
             
             if st.session_state.active_result is None or not final_gdf.equals(st.session_state.active_result):
