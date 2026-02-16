@@ -76,7 +76,7 @@ if 'active_result' not in st.session_state:
     st.session_state.active_result = None
 
 # --- Header and Jurisdiction Selection ---
-st.title("International Border Geospatial Alignment Engine")
+st.title("Geospatial Border Alignment Engine")
 st.caption("Engineered spatial reconciliation of user-defined vectors against authoritative ADM0 datasets.")
 
 country_list = sorted([c.name for c in pycountry.countries])
