@@ -41,7 +41,7 @@ with st.container(border=True):
     uploaded_file = st.file_uploader("1. Upload Polygon (GeoJSON, KML, KMZ)", type=['geojson', 'kml', 'kmz'])
     selected_country = st.selectbox("2. Target Country", options=countries)
     
-    # High-fidelity setting: 0.0005 degrees is roughly every 50 meters.
+    # 0.0005 degrees (~50m) provides the density needed for complex borders
     point_density = 0.0005 
 
     if st.button("Process and Snap", use_container_width=True):
@@ -71,6 +71,7 @@ with st.container(border=True):
                         final_poly = final_union
 
                     # 4. Mapbox Optimization (Densification)
+                    # This forces Mapbox to respect the jagged nature of the border
                     final_poly = final_poly.segmentize(max_segment_length=point_density)
 
                     st.session_state.result_gdf = gpd.GeoDataFrame(geometry=[final_poly], crs="EPSG:4326")
@@ -88,35 +89,33 @@ if st.session_state.result_gdf is not None:
     st.divider()
     st.subheader("Preview and Export")
     
-    # Map Preview: Defaulting to OpenStreetMap (Non-Satellite)
-    m = folium.Map(location=[poly.centroid.y, poly.centroid.x], zoom_start=12)
+    # Map Preview: Clean Standard View
+    m = folium.Map(
+        location=[poly.centroid.y, poly.centroid.x], 
+        zoom_start=12,
+        tiles='OpenStreetMap'
+    )
     
-    # Adding OpenStreetMap as default
-    folium.TileLayer('OpenStreetMap', name='Standard View').add_to(m)
-    
-    # Adding Satellite as an optional background
-    folium.TileLayer(
-        tiles='https://mt1.google.com/vt/lyrs=y&x={x}&y={y}&z={z}',
-        attr='Google',
-        name='Satellite View',
-        overlay=False,
-        control=True
+    folium.GeoJson(
+        res, 
+        style_function=lambda x: {
+            'color': '#0000FF', 
+            'weight': 2, 
+            'fillOpacity': 0.2
+        }
     ).add_to(m)
-    
-    folium.GeoJson(res, style_function=lambda x: {'color': '#0000FF', 'weight': 2, 'fillOpacity': 0.2}).add_to(m)
-    folium.LayerControl(position='topright').add_to(m)
     
     st_folium(m, width=700, height=500, key="persistent_map")
 
     # Downloads
     c1, c2 = st.columns(2)
     
-    # High-precision GeoJSON for Mapbox
+    # High-precision GeoJSON for Mapbox Studio
     geojson_out = res.to_json(na='null', show_bbox=False, drop_id=True)
-    c1.download_button("Download GeoJSON", geojson_out, "mapbox_ready.geojson", use_container_width=True)
+    c1.download_button("Download GeoJSON", geojson_out, "snapped_polygon.geojson", use_container_width=True)
     
     # KML Export
     res.to_file("temp_out.kml", driver='KML')
     with open("temp_out.kml", "rb") as f:
-        c2.download_button("Download KML", f, "output.kml", use_container_width=True)
+        c2.download_button("Download KML", f, "snapped_polygon.kml", use_container_width=True)
     os.remove("temp_out.kml")
