@@ -5,7 +5,6 @@ import fiona
 import os
 import pycountry
 from zipfile import ZipFile
-from shapely.ops import unary_union
 from shapely.geometry import MultiPolygon
 from streamlit_folium import st_folium
 import folium
@@ -40,8 +39,8 @@ with st.container(border=True):
     uploaded_file = st.file_uploader("1. Upload Polygon", type=['geojson', 'kml', 'kmz'])
     selected_country = st.selectbox("2. Target Country", options=countries)
     
-    # 0.005 degrees is approx 500m. This is the "magnet" reach.
-    snap_distance = st.slider("Snap Sensitivity (Degrees)", 0.001, 0.02, 0.005, format="%.3f")
+    # 0.005 degrees is approx 500m. 
+    snap_distance = st.slider("Snap Sensitivity (Degrees)", 0.001, 0.05, 0.005, format="%.3f")
 
     if st.button("Process and Snap", use_container_width=True):
         if uploaded_file:
@@ -51,26 +50,29 @@ with st.container(border=True):
                     
                     # 1. Load User Data
                     user_gdf = load_data(uploaded_file).to_crs(epsg=4326)
-                    user_geom = user_gdf.unary_union
+                    user_geom = user_gdf.geometry.union_all()
 
                     # 2. Fetch official border
                     api_url = f"https://www.geoboundaries.org/api/current/gbOpen/{iso_code}/ADM0/"
                     r = requests.get(api_url).json()
                     border_gdf = gpd.read_file(r['gjDownloadURL'])
-                    border_geom = border_gdf.unary_union
+                    border_geom = border_gdf.geometry.union_all()
 
                     # 3. SELECTIVE SNAP LOGIC
                     # Create a "search zone" around your polygon edges
                     search_zone = user_geom.boundary.buffer(snap_distance)
                     
-                    # Find only the parts of the international border that fall inside that search zone
+                    # Find only segments of the border that fall inside that search zone
                     relevant_border_segments = border_geom.intersection(search_zone)
                     
-                    # Merge those specific border segments into your original polygon
-                    # This "increases or decreases" the edge to meet the border
-                    final_union = unary_union([user_geom, relevant_border_segments])
+                    # SAFETY GATE: Only try to union if segments were actually found
+                    if relevant_border_segments is not None and not relevant_border_segments.is_empty:
+                        final_union = user_geom.union(relevant_border_segments)
+                    else:
+                        # If no border is close enough, we just use the original geometry
+                        final_union = user_geom
                     
-                    # Cleanup: Ensure it remains a solid polygon (filling small slivers)
+                    # Cleanup: Ensure it remains a solid polygon
                     final_poly_geom = final_union.buffer(0.00001).buffer(-0.00001)
 
                     if isinstance(final_poly_geom, MultiPolygon):
@@ -84,7 +86,9 @@ with st.container(border=True):
                     st.session_state.result_gdf = gpd.GeoDataFrame(geometry=[final_poly], crs="EPSG:4326")
                     status.update(label="Processing Complete", state="complete")
             except Exception as e:
-                st.error(f"Error: {e}")
+                st.error(f"Processing failed. This usually happens if the upload contains lines instead of polygons. Error: {e}")
+        else:
+            st.warning("Please upload a file first.")
 
 # --- Results Area ---
 if st.session_state.result_gdf is not None:
