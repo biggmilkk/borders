@@ -9,25 +9,12 @@ from folium.plugins import Draw
 
 st.set_page_config(page_title="Border Cutter", layout="wide")
 
-# --- Styles ---
-st.markdown("""
-    <style>
-    .main { background-color: #f5f7f9; }
-    .stButton>button { width: 100%; border-radius: 5px; height: 3em; background-color: #007bff; color: white; }
-    </style>
-    """, unsafe_allow_html=True)
-
-# --- Logic ---
 @st.cache_data(show_spinner=False)
 def get_border(country_name):
     iso = pycountry.countries.get(name=country_name).alpha_3
     url = f"https://www.geoboundaries.org/api/current/gbOpen/{iso}/ADM0/"
     r = requests.get(url, timeout=10).json()
     return gpd.read_file(r['gjDownloadURL'])
-
-# --- Session State ---
-if 'processed_data' not in st.session_state:
-    st.session_state.processed_data = None
 
 # --- UI ---
 st.title("✂️ Minimal Border Cutter")
@@ -39,48 +26,44 @@ with col_ctrl:
     target = st.selectbox("1. Target Country", countries, index=countries.index("Switzerland"))
     border_gdf = get_border(target)
     
-    st.info("2. Draw on the map to select an area. It will automatically be cut to the official border.")
+    st.markdown("### 2. Instructions")
+    st.write("- Use the **Square** or **Polygon** tool.")
+    st.write("- **Important:** If using Polygon, click the **start point** to finish.")
     
-    # Download section (only visible if data exists)
-    if st.session_state.processed_data is not None:
-        st.success("Area Processed!")
-        st.download_button(
-            "💾 Download GeoJSON",
-            data=st.session_state.processed_data,
-            file_name=f"{target}_clipped.geojson",
-            mime="application/json"
-        )
-        if st.button("Clear Canvas"):
-            st.session_state.processed_data = None
-            st.rerun()
+    # Placeholder for the download button
+    download_placeholder = st.empty()
 
 with col_map:
-    # Build Map
     m = folium.Map(location=[46.8, 8.2], zoom_start=8, tiles='CartoDB Positron')
-    bounds = border_gdf.total_bounds
-    m.fit_bounds([[bounds[1], bounds[0]], [bounds[3], bounds[2]]])
+    m.fit_bounds([[border_gdf.total_bounds[1], border_gdf.total_bounds[0]], 
+                  [border_gdf.total_bounds[3], border_gdf.total_bounds[2]]])
     
-    # Static Country Layer
-    folium.GeoJson(
-        border_gdf, 
-        style_function=lambda x: {'color': '#333', 'fillOpacity': 0.05, 'weight': 1.5}
-    ).add_to(m)
+    folium.GeoJson(border_gdf, style_function=lambda x: {'color': '#333', 'fillOpacity': 0.05, 'weight': 1.5}).add_to(m)
     
-    # Add Draw Tools
     Draw(export=False, position='topleft', 
-         draw_options={'polyline':False, 'circle':False, 'marker':False, 'circlemarker':False}
+         draw_options={'polyline':False, 'circle':False, 'marker':False, 'circlemarker':False, 'polygon':True}
     ).add_to(m)
     
-    # Capture map data - using a key prevents it from resetting on every interaction
+    # We use all_drawings to catch any shape currently on the map
     map_output = st_folium(m, width="100%", height=600, key="cutter_map")
 
-# --- Intersection Engine ---
-# This runs only when a new drawing is detected
-if map_output['last_active_drawing']:
-    user_shape = shape(map_output['last_active_drawing']['geometry'])
-    user_gdf = gpd.GeoDataFrame(geometry=[user_shape], crs="EPSG:4326")
+# --- Logic: Process any drawing found on map ---
+if map_output and map_output.get('all_drawings'):
+    # Take the most recent drawing
+    last_draw = map_output['all_drawings'][-1]
+    user_shape = shape(last_draw['geometry'])
     
-    # Calculate intersection automatically
-    clipped = gpd.overlay(user_gdf, border_gdf, how='intersection')
-    if not clipped.empty:
-        st.session_state.processed_data = clipped.to_json()
+    if user_shape.is_valid:
+        user_gdf = gpd.GeoDataFrame(geometry=[user_shape], crs="EPSG:4326")
+        clipped = gpd.overlay(user_gdf, border_gdf, how='intersection')
+        
+        if not clipped.empty:
+            with col_ctrl:
+                st.success("Target area locked!")
+                download_placeholder.download_button(
+                    "💾 Download Result",
+                    data=clipped.to_json(),
+                    file_name=f"{target}_clipped.geojson",
+                    mime="application/json",
+                    use_container_width=True
+                )
