@@ -34,17 +34,17 @@ def load_data(file):
     return gpd.read_file(file)
 
 # --- Main UI ---
-st.title("🗺️ Global Border Snapper")
+st.title("Global Border Snapper")
 st.markdown("Snap polygons to international borders. Optimized for high-detail Mapbox uploads.")
 
 with st.container(border=True):
     uploaded_file = st.file_uploader("1. Upload Polygon (GeoJSON, KML, KMZ)", type=['geojson', 'kml', 'kmz'])
     selected_country = st.selectbox("2. Target Country", options=countries)
     
-    # Hidden high-fidelity setting (defaults to the "Alpine-grade" detail you need)
+    # High-fidelity setting: 0.0005 degrees is roughly every 50 meters.
     point_density = 0.0005 
 
-    if st.button("🚀 Process & Snap", use_container_width=True):
+    if st.button("Process and Snap", use_container_width=True):
         if uploaded_file:
             try:
                 with st.status("Snapping to international border...") as status:
@@ -60,8 +60,7 @@ with st.container(border=True):
                     border_gdf = gpd.read_file(r['gjDownloadURL'])
                     border_geom = border_gdf.unary_union
 
-                    # 3. Snap & Merge Logic
-                    # Buffer handles the "close enough" requirement
+                    # 3. Snap and Merge Logic
                     snapped_segment = user_geom.buffer(0.005).intersection(border_geom)
                     final_union = unary_union([user_geom, snapped_segment])
                     
@@ -72,11 +71,10 @@ with st.container(border=True):
                         final_poly = final_union
 
                     # 4. Mapbox Optimization (Densification)
-                    # Adds anchor points every ~50m to prevent Mapbox simplification
                     final_poly = final_poly.segmentize(max_segment_length=point_density)
 
                     st.session_state.result_gdf = gpd.GeoDataFrame(geometry=[final_poly], crs="EPSG:4326")
-                    status.update(label="Processing Complete!", state="complete")
+                    status.update(label="Processing Complete", state="complete")
             except Exception as e:
                 st.error(f"Error: {e}")
         else:
@@ -88,21 +86,25 @@ if st.session_state.result_gdf is not None:
     poly = res.geometry.iloc[0]
 
     st.divider()
-    st.subheader("Preview & Export")
+    st.subheader("Preview and Export")
     
-    # Map Preview with Satellite toggle included
+    # Map Preview: Defaulting to OpenStreetMap (Non-Satellite)
     m = folium.Map(location=[poly.centroid.y, poly.centroid.x], zoom_start=12)
+    
+    # Adding OpenStreetMap as default
+    folium.TileLayer('OpenStreetMap', name='Standard View').add_to(m)
+    
+    # Adding Satellite as an optional background
     folium.TileLayer(
         tiles='https://mt1.google.com/vt/lyrs=y&x={x}&y={y}&z={z}',
         attr='Google',
-        name='Google Satellite (Hybrid)',
+        name='Satellite View',
         overlay=False,
         control=True
     ).add_to(m)
-    folium.TileLayer('OpenStreetMap').add_to(m)
     
-    folium.GeoJson(res, style_function=lambda x: {'color': '#0000FF', 'weight': 3, 'fillOpacity': 0.3}).add_to(m)
-    folium.LayerControl().add_to(m)
+    folium.GeoJson(res, style_function=lambda x: {'color': '#0000FF', 'weight': 2, 'fillOpacity': 0.2}).add_to(m)
+    folium.LayerControl(position='topright').add_to(m)
     
     st_folium(m, width=700, height=500, key="persistent_map")
 
@@ -111,10 +113,10 @@ if st.session_state.result_gdf is not None:
     
     # High-precision GeoJSON for Mapbox
     geojson_out = res.to_json(na='null', show_bbox=False, drop_id=True)
-    c1.download_button("📩 Download GeoJSON", geojson_out, "mapbox_ready.geojson", use_container_width=True)
+    c1.download_button("Download GeoJSON", geojson_out, "mapbox_ready.geojson", use_container_width=True)
     
     # KML Export
     res.to_file("temp_out.kml", driver='KML')
     with open("temp_out.kml", "rb") as f:
-        c2.download_button("📩 Download KML", f, "output.kml", use_container_width=True)
+        c2.download_button("Download KML", f, "output.kml", use_container_width=True)
     os.remove("temp_out.kml")
