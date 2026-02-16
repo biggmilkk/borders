@@ -16,9 +16,6 @@ st.set_page_config(page_title="Global Border Snapper", layout="centered")
 if 'result_gdf' not in st.session_state:
     st.session_state.result_gdf = None
 
-# --- Helpers ---
-countries = sorted([c.name for c in pycountry.countries])
-
 def get_iso3(name):
     return pycountry.countries.get(name=name).alpha_3
 
@@ -31,16 +28,14 @@ def load_data(file):
                 return gpd.read_file(kml_file, driver='KML')
     return gpd.read_file(file)
 
-# --- Main UI ---
 st.title("Global Border Snapper")
-st.markdown("Selective snapping: Magnetize edges near borders while keeping internal lines intact.")
 
 with st.container(border=True):
     uploaded_file = st.file_uploader("1. Upload Polygon", type=['geojson', 'kml', 'kmz'])
     selected_country = st.selectbox("2. Target Country", options=countries)
     
-    # 0.005 degrees is approx 500m. 
-    snap_distance = st.slider("Snap Sensitivity (Degrees)", 0.001, 0.05, 0.005, format="%.3f")
+    # Range increased: 0.05 is roughly 5.5km
+    snap_distance = st.slider("Snap Sensitivity (Degrees)", 0.001, 0.05, 0.01, format="%.3f")
 
     if st.button("Process and Snap", use_container_width=True):
         if uploaded_file:
@@ -48,8 +43,10 @@ with st.container(border=True):
                 with st.status("Performing Selective Snap...") as status:
                     iso_code = get_iso3(selected_country)
                     
-                    # 1. Load User Data
+                    # 1. Load and Fix User Data
                     user_gdf = load_data(uploaded_file).to_crs(epsg=4326)
+                    # Fix self-intersections and geometry issues
+                    user_gdf['geometry'] = user_gdf.geometry.make_valid()
                     user_geom = user_gdf.geometry.union_all()
 
                     # 2. Fetch official border
@@ -59,20 +56,21 @@ with st.container(border=True):
                     border_geom = border_gdf.geometry.union_all()
 
                     # 3. SELECTIVE SNAP LOGIC
-                    # Create a "search zone" around your polygon edges
+                    # Buffer the boundary to create a 'catchment' area
                     search_zone = user_geom.boundary.buffer(snap_distance)
                     
-                    # Find only segments of the border that fall inside that search zone
-                    relevant_border_segments = border_geom.intersection(search_zone)
+                    # Get segments of the border that are close to the user geometry
+                    relevant_border = border_geom.intersection(search_zone)
                     
-                    # SAFETY GATE: Only try to union if segments were actually found
-                    if relevant_border_segments is not None and not relevant_border_segments.is_empty:
-                        final_union = user_geom.union(relevant_border_segments)
+                    # Ensure we have a valid geometry object to work with
+                    if relevant_border is not None and not relevant_border.is_empty:
+                        # Merge the original with the nearby border segments
+                        final_union = user_geom.union(relevant_border)
                     else:
-                        # If no border is close enough, we just use the original geometry
                         final_union = user_geom
                     
-                    # Cleanup: Ensure it remains a solid polygon
+                    # Cleanup slivers and ensure solid geometry
+                    # This replaces the failing .buffer call with a safe sequence
                     final_poly_geom = final_union.buffer(0.00001).buffer(-0.00001)
 
                     if isinstance(final_poly_geom, MultiPolygon):
@@ -86,7 +84,7 @@ with st.container(border=True):
                     st.session_state.result_gdf = gpd.GeoDataFrame(geometry=[final_poly], crs="EPSG:4326")
                     status.update(label="Processing Complete", state="complete")
             except Exception as e:
-                st.error(f"Processing failed. This usually happens if the upload contains lines instead of polygons. Error: {e}")
+                st.error(f"Geospatial Error: {e}")
         else:
             st.warning("Please upload a file first.")
 
