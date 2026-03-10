@@ -153,7 +153,9 @@ if map_interaction and map_interaction.get('all_drawings') and boundary_gdf is n
         
         if not processed_intersection.empty:
             # Strip attributes to ensure polygon descriptions are empty
-            final_gdf = processed_intersection[['geometry']].copy()
+            merged_geom = processed_intersection.geometry.union_all()  # shapely >= 2
+
+            final_gdf = gpd.GeoDataFrame(geometry=[merged_geom], crs=processed_intersection.crs)
             
             if st.session_state.active_result is None or not final_gdf.equals(st.session_state.active_result):
                 st.session_state.active_result = final_gdf
