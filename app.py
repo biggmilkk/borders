@@ -97,33 +97,6 @@ def load_world_bank_admin0():
     return gdf
 
 
-@st.cache_data(show_spinner=False)
-def fetch_boundary(country_name):
-    if not country_name:
-        return None
-
-    iso3 = get_country_iso3(country_name)
-    if not iso3:
-        return None
-
-    try:
-        admin0_gdf = load_world_bank_admin0()
-        if admin0_gdf is None or admin0_gdf.empty:
-            return None
-
-        result = admin0_gdf[
-            admin0_gdf[WB_ISO3_FIELD].astype(str).str.strip().str.upper() == iso3
-        ].copy()
-
-        if result.empty:
-            return None
-
-        return result[["geometry"]]
-
-    except Exception:
-        return None
-
-
 def flatten_to_multipolygon(geom):
     """
     Convert Polygon / MultiPolygon / GeometryCollection into a clean
@@ -187,12 +160,62 @@ def merge_to_single_feature(gdf):
     return gpd.GeoDataFrame(geometry=[merged], crs=gdf.crs)
 
 
+@st.cache_data(show_spinner=False)
+def fetch_boundaries(country_names):
+    if not country_names:
+        return None
+
+    iso3_list = []
+    for country_name in country_names:
+        iso3 = get_country_iso3(country_name)
+        if iso3:
+            iso3_list.append(iso3)
+
+    if not iso3_list:
+        return None
+
+    try:
+        admin0_gdf = load_world_bank_admin0()
+        if admin0_gdf is None or admin0_gdf.empty:
+            return None
+
+        result = admin0_gdf[
+            admin0_gdf[WB_ISO3_FIELD].astype(str).str.strip().str.upper().isin(iso3_list)
+        ].copy()
+
+        if result.empty:
+            return None
+
+        return merge_to_single_feature(result)
+
+    except Exception:
+        return None
+
+
+def build_export_name(primary_country, extra_countries):
+    parts = []
+
+    if primary_country:
+        parts.append(primary_country.lower().replace(" ", "_"))
+
+    for country in extra_countries[:2]:
+        parts.append(country.lower().replace(" ", "_"))
+
+    if len(extra_countries) > 2:
+        parts.append("and_more")
+
+    if not parts:
+        return "countries_border"
+
+    return f"{'_'.join(parts)}_border"
+
+
 # --- Persistence ---
 if "active_result" not in st.session_state:
     st.session_state.active_result = None
 
-if "last_selected_target" not in st.session_state:
-    st.session_state.last_selected_target = None
+if "last_selected_targets" not in st.session_state:
+    st.session_state.last_selected_targets = []
 
 
 # --- Header and Jurisdiction Selection ---
@@ -208,29 +231,43 @@ if not os.path.exists(WB_GPKG_PATH):
 
 country_list = sorted([c.name for c in pycountry.countries])
 
-selected_target = st.selectbox(
-    "Select International Jurisdiction",
+primary_country = st.selectbox(
+    "Select Primary Jurisdiction",
     country_list,
     index=None,
-    placeholder="Choose a country to load reference borders..."
+    placeholder="Choose a primary country..."
 )
 
-if st.session_state.last_selected_target != selected_target:
-    st.session_state.active_result = None
-    st.session_state.last_selected_target = selected_target
+available_extra_countries = [c for c in country_list if c != primary_country]
 
-boundary_gdf = fetch_boundary(selected_target)
+extra_countries = st.multiselect(
+    "Add Adjacent Jurisdictions (Optional)",
+    available_extra_countries,
+    placeholder="Choose additional countries to merge with the primary jurisdiction..."
+)
+
+selected_targets = [primary_country] + extra_countries if primary_country else []
+current_targets = sorted(selected_targets)
+
+if st.session_state.last_selected_targets != current_targets:
+    st.session_state.active_result = None
+    st.session_state.last_selected_targets = current_targets
+
+if selected_targets:
+    st.caption(f"Active boundary target: {' + '.join(selected_targets)}")
+
+boundary_gdf = fetch_boundaries(selected_targets)
 
 
 # --- Spatial Workbench (Map) ---
 st.markdown("---")
 st.subheader("Define Area of Interest")
 
-if not selected_target:
-    st.info("Select a jurisdiction above to activate the spatial workbench.")
+if not selected_targets:
+    st.info("Select a primary jurisdiction above to activate the spatial workbench.")
 
-if selected_target and boundary_gdf is None:
-    st.warning("Could not load the selected country boundary from the World Bank GeoPackage.")
+if selected_targets and boundary_gdf is None:
+    st.warning("Could not load the selected country boundary combination from the World Bank GeoPackage.")
 
 if boundary_gdf is not None:
     b = boundary_gdf.total_bounds
@@ -323,8 +360,7 @@ def export_section():
             st.error("No valid geometry available for export.")
             return
 
-        clean_name = selected_target.lower().replace(" ", "_") if selected_target else "country"
-        final_filename = f"{clean_name}_border"
+        final_filename = build_export_name(primary_country, extra_countries)
 
         col_json, col_kml = st.columns(2)
 
