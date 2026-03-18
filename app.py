@@ -115,11 +115,13 @@ def detect_iso3_column(gdf):
 @st.cache_data(show_spinner=False)
 def discover_world_bank_layers(gpkg_path):
     if not os.path.exists(gpkg_path):
-        return []
+        return [], "File does not exist"
+
     try:
-        return list(fiona.listlayers(gpkg_path))
-    except Exception:
-        return []
+        layers = list(fiona.listlayers(gpkg_path))
+        return layers, None
+    except Exception as e:
+        return [], str(e)
 
 
 @st.cache_data(show_spinner=False)
@@ -142,7 +144,7 @@ def load_world_bank_admin0(gpkg_path):
     if not os.path.exists(gpkg_path):
         return None, None, None
 
-    layers = discover_world_bank_layers(gpkg_path)
+    layers, _ = discover_world_bank_layers(gpkg_path)
     if not layers:
         return None, None, None
 
@@ -282,16 +284,33 @@ st.title("Geospatial Border Alignment Engine")
 st.caption("Engineered spatial reconciliation of user-defined vectors against World Bank ADM0 datasets.")
 
 if SHOW_DEBUG:
-    with st.expander("World Bank GeoPackage Debug", expanded=False):
+    with st.expander("World Bank GeoPackage Debug", expanded=True):
         st.write("Current working directory:", os.getcwd())
         st.write("GeoPackage path:", WB_GPKG_PATH)
         st.write("GeoPackage exists:", os.path.exists(WB_GPKG_PATH))
 
-        layers = discover_world_bank_layers(WB_GPKG_PATH)
+        st.write("Root folder contents:", os.listdir("."))
+
+        if os.path.exists("data"):
+            st.write("Data folder contents:", os.listdir("data"))
+        else:
+            st.write("Data folder does not exist.")
+
+        if os.path.exists(WB_GPKG_PATH):
+            st.write("File size (bytes):", os.path.getsize(WB_GPKG_PATH))
+
+            try:
+                with open(WB_GPKG_PATH, "rb") as f:
+                    header = f.read(200)
+                st.write("First 200 bytes:", header)
+            except Exception as e:
+                st.write("Could not read file header:", str(e))
+
+        layers, layer_error = discover_world_bank_layers(WB_GPKG_PATH)
         st.write("Layers found:", layers if layers else "None")
+        st.write("Layer read error:", layer_error)
 
         detected_gdf, detected_layer, detected_iso_col = load_world_bank_admin0(WB_GPKG_PATH)
-
         st.write("Detected Admin 0 layer:", detected_layer)
         st.write("Detected ISO3 column:", detected_iso_col)
 
@@ -301,10 +320,16 @@ if SHOW_DEBUG:
             st.dataframe(detected_gdf.head(3))
 
 if not os.path.exists(WB_GPKG_PATH):
-    st.error(
-        f"GeoPackage not found. Place '{WB_GPKG_PATH}' in the same folder as app.py "
-        "or update WB_GPKG_PATH to the correct location."
-    )
+    st.error(f"GeoPackage not found at: {WB_GPKG_PATH}")
+    st.write("Current working directory:", os.getcwd())
+    st.write("Root folder contents:", os.listdir("."))
+
+    if os.path.exists("data"):
+        st.write("Data folder contents:", os.listdir("data"))
+    else:
+        st.write("No data folder found.")
+
+    st.stop()
 
 country_list = sorted([c.name for c in pycountry.countries])
 
