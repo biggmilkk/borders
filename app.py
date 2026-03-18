@@ -191,6 +191,9 @@ def merge_to_single_feature(gdf):
 if "active_result" not in st.session_state:
     st.session_state.active_result = None
 
+if "last_selected_target" not in st.session_state:
+    st.session_state.last_selected_target = None
+
 
 # --- Header and Jurisdiction Selection ---
 st.title("Geospatial Border Alignment Engine")
@@ -211,6 +214,10 @@ selected_target = st.selectbox(
     index=None,
     placeholder="Choose a country to load reference borders..."
 )
+
+if st.session_state.last_selected_target != selected_target:
+    st.session_state.active_result = None
+    st.session_state.last_selected_target = selected_target
 
 boundary_gdf = fetch_boundary(selected_target)
 
